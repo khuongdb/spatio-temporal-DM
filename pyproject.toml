@@ -1,0 +1,22 @@
+[project]
+name = "spartdm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "h5py>=3.13.0",
+    "ipykernel>=6.29.5",
+    "matplotlib>=3.10.3",
+    "monai>=1.3.2",
+    "monai-generative>=0.2.3",
+    "nibabel>=5.3.2",
+    "numpy>=2.2.6",
+    "pandas>=2.2.3",
+    "pillow>=11.2.1",
+    "psutil>=7.0.0",
+    "scikit-learn>=1.6.1",
+    "scipy>=1.15.3",
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
+]
