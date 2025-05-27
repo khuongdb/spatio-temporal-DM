@@ -4,10 +4,12 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
+from einops import rearrange
+import torch
 
 
 class StarmenDataset(Dataset):
-    def __init__(self, csv_path, nb_subject=None, data_mask=None):
+    def __init__(self, csv_path, time=10, nb_subject=None, data_mask=None):
         self.csv_path = csv_path
 
         if nb_subject:
@@ -16,35 +18,55 @@ class StarmenDataset(Dataset):
             self.nb_subject = 1_000
         self.datas = pd.read_csv(self.csv_path)
         self.ids = self.datas["id"].unique()
+        self.time = time
 
-        if data_mask: 
-            self.data_mask = data_mask
-            self.datas['masked'] = False
-            self.datas = self.datas.groupby('id', group_keys=False).apply(self.mask_rows)
-            self.datas_unmasked = self.datas[~self.datas["masked"]]
+        # if data_mask:
+        #     self.data_mask = data_mask
+        #     self.datas['masked'] = False
+        #     self.datas = self.datas.groupby('id', group_keys=False).apply(self.mask_rows)
+        #     self.datas_unmasked = self.datas[~self.datas["masked"]]
 
     def mask_rows(self, group):
         random_probs = np.random.rand(len(group))
         mask = random_probs < self.data_mask
-        group.loc[mask, 'masked'] = True
+        group.loc[mask, "masked"] = True
         return group
+
+    def prepare_mask(self):
+
+        target_idx = np.random.randint(1, self.time)
+        missing_mask = [1]
+        if target_idx > 1:
+            if target_idx > 2:
+                missing_mask = np.append(
+                    missing_mask, np.random.randint(0, 2, size=(target_idx - 2,))
+                )
+            missing_mask = np.append(missing_mask, [1])
+        missing_mask = np.append(
+            missing_mask, np.zeros(self.time - len(missing_mask))
+        ).astype(np.float32)
+        return target_idx, missing_mask
 
     def __len__(self):
         return len(self.ids)
 
     def __getitem__(self, index):
         """Generates one sample of data"""
-        # Select sample
-        if self.data_mask:
-            df = self.datas_unmasked
-        else: 
-            df = self.datas
-        row = df.iloc[index]
-        img_np = np.load(row["img_path"])
-        id = row["id"]
-        age = row["age"]
-        return img_np, id, age
-    
+
+        index_id = self.ids[index]
+        df = self.datas[self.datas["id"] == index_id]
+        df.sort_values(by="age")
+
+        img_ls = [np.load(i) for i in df["img_path"]]
+        img_t = np.stack(img_ls, axis=0)
+        # Add channel dimension c
+        img_t = rearrange(img_t, "t h w -> t 1 h w")
+
+        # Random choose a target index and create missing mask
+        target_idx, mask = self.prepare_mask()
+        x_prev = np.clip(img_t[:-1] * mask[:-1, None, None, None], 0.0, 1.0)
+        x = img_t[target_idx]
+        return torch.from_numpy(x).float(), torch.from_numpy(x_prev).float()
 
     def plot_data(self, index=0, save=False, show_info=False):
         """
@@ -52,7 +74,7 @@ class StarmenDataset(Dataset):
         :param index: int or list[int]
         """
 
-        if isinstance(index, int): 
+        if isinstance(index, int):
             index = [index]
 
         fig, axes = plt.subplots(len(index), 10, figsize=(20, 2 * len(index)))
@@ -66,10 +88,16 @@ class StarmenDataset(Dataset):
                 # Additional infos
                 if show_info:
                     subject_id = self.datas["id"].iloc[10 * i]
-                    age = self.datas["age"].iloc[10*i+j]
-                    axes[e][0].set_ylabel(f"Subject {subject_id}", rotation=0, labelpad=50, fontsize=10, va='center')
+                    age = self.datas["age"].iloc[10 * i + j]
+                    axes[e][0].set_ylabel(
+                        f"Subject {subject_id}",
+                        rotation=0,
+                        labelpad=50,
+                        fontsize=10,
+                        va="center",
+                    )
                     axes[e][j].set_title(f"age: {age}")
-                    
+
         for axe in axes:
             for ax in axe:
                 ax.set_xticks([])
@@ -82,3 +110,11 @@ class StarmenDataset(Dataset):
         # if not os.path.exists('visualization'):
         #     os.mkdir('visualization')
         # plt.savefig('visualization/Z.png', dpi=300, bbox_inches='tight')
+
+
+def main():
+    pass
+
+
+if __name__ == "__main__":
+    main()

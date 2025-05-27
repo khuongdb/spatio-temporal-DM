@@ -80,6 +80,7 @@ def prepare_starmen_dataset(csv_path, test_split=0.3):
     for d, f in zip((train_df, val_df, test_df), (train_file, val_file, test_file)):
         print(f"Train dataset: ({len(d['id'])} subjects) created at {f}")
 
+
 def main():
     parser = argparse.ArgumentParser(description="Prepare dataset from CSV file")
     parser.add_argument("--csv_path", type=str, default="data/starmen/output_random_noacc/df.csv",
