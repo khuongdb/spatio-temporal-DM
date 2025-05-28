@@ -3,8 +3,8 @@
 #OAR -q besteffort 
 #OAR -p "cluster='kinovis'"
 #OAR -l host=1/gpu=1,walltime=5:00:00
-#OAR -O OAR_%jobid%.out
-#OAR -E OAR_%jobid%.err 
+#OAR -O oarlogs/OAR_%jobid%.out
+#OAR -E oarlogs/OAR_%jobid%.err 
 
 
 
@@ -24,8 +24,12 @@ else
     echo "uv is already installed."
 fi
 
+# sync uv environment
+source .venv/bin/activate
+uv sync
 
-# make use of a python torch environment
-module load conda
-conda activate pytorch_env
+
+# run script
+# module load conda
+# conda activate pytorch_env
 python3 -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))";
