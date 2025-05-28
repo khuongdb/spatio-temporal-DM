@@ -176,3 +176,7 @@ cython_debug/
 
 # VSCode debugging
 .vscode/
+
+# data folder
+data/
+outdirs/

@@ -13,7 +13,18 @@
 # display some information about attributed resources
 hostname 
 nvidia-smi 
- 
+
+
+# Check if uv is installed on the machine. If not install uv. 
+# https://docs.astral.sh/uv/getting-started/installation/
+if ! command -v uv &> /dev/null; then
+    echo "uv not found. Installing..."
+    curl -Ls https://astral.sh/uv/install.sh | sh
+else
+    echo "uv is already installed."
+fi
+
+
 # make use of a python torch environment
 module load conda
 conda activate pytorch_env
