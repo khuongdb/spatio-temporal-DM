@@ -9,28 +9,19 @@ import torch
 
 
 class StarmenDataset(Dataset):
-    def __init__(self, csv_path, time=10, nb_subject=None, data_mask=None):
-        self.csv_path = csv_path
+    def __init__(self, data_dir, split="train", time=10, nb_subject=None):
+        self.csv_path = os.path.join(data_dir, f"starmen_{split}.csv")
 
-        if nb_subject:
-            self.nb_subject = nb_subject
-        else:
-            self.nb_subject = 1_000
         self.datas = pd.read_csv(self.csv_path)
         self.ids = self.datas["id"].unique()
         self.time = time
 
-        # if data_mask:
-        #     self.data_mask = data_mask
-        #     self.datas['masked'] = False
-        #     self.datas = self.datas.groupby('id', group_keys=False).apply(self.mask_rows)
-        #     self.datas_unmasked = self.datas[~self.datas["masked"]]
+        if nb_subject:
+            selected_ids = np.random.choice(self.ids, size=nb_subject, replace=False)
+            self.datas = self.datas[self.datas["id"].isin(selected_ids)]
+            self.ids = selected_ids
+        
 
-    def mask_rows(self, group):
-        random_probs = np.random.rand(len(group))
-        mask = random_probs < self.data_mask
-        group.loc[mask, "masked"] = True
-        return group
 
     def prepare_mask(self):
 
@@ -51,7 +42,12 @@ class StarmenDataset(Dataset):
         return len(self.ids)
 
     def __getitem__(self, index):
-        """Generates one sample of data"""
+        """
+        Generates one sample of data: concatenate all data of 1 patient into 1 tensor. 
+        Return: 
+        x: target image, shape [C, H, W]
+        x_prev: previous images, shape [T-1, C, H, W]
+        """
 
         index_id = self.ids[index]
         df = self.datas[self.datas["id"] == index_id]
@@ -67,6 +63,8 @@ class StarmenDataset(Dataset):
         x_prev = np.clip(img_t[:-1] * mask[:-1, None, None, None], 0.0, 1.0)
         x = img_t[target_idx]
         return torch.from_numpy(x).float(), torch.from_numpy(x_prev).float()
+
+
 
     def plot_data(self, index=0, save=False, show_info=False):
         """

@@ -40,7 +40,7 @@ class DDPM(nn.Module):
     def __init__(self, vivit_model, nn_model, betas, n_T, device, drop_prob=0.1):
         super(DDPM, self).__init__()
         self.vivit_model = vivit_model
-        self.nn_model = nn_model.to(device)
+        self.nn_model = nn_model.to(device)  # nn_model instance is init outside of DDPM class. 
 
         # register_buffer allows accessing dictionary produced by ddpm_schedules
         # e.g. can access self.sqrtab later
@@ -62,14 +62,27 @@ class DDPM(nn.Module):
         _ts = torch.randint(1, self.n_T, (x.shape[0],)).to(self.device)  # t ~ Uniform(0, n_T)
         noise = torch.randn_like(x)  # eps ~ N(0, 1)
 
-        x_t = (
-                self.sqrtab[_ts, None, None, None, None] * x
-                + self.sqrtmab[_ts, None, None, None, None] * noise
-        )  # This is the x_t, which is sqrt(alphabar) x_0 + sqrt(1-alphabar) * eps
+        # Broadcast sqrtab and sqrtmab based on the dim of input x
+        # xdim = 5 [B, C, D, H, W] if x is 3D. \
+        # xdim = 4 [B, C, H, W] if x is 2D. 
+        xdim = x.ndim  
+        broadcast_dim = xdim - 1
+        sqrtab_bc = self.sqrtab[_ts].view(-1, *([1] * broadcast_dim))
+        sqrtmab_bc = self.sqrtmab[_ts].view(-1, *([1] * broadcast_dim))
+
+        # x_t = (
+        #         self.sqrtab[_ts, None, None, None, None] * x
+        #         + self.sqrtmab[_ts, None, None, None, None] * noise
+        # )
+        x_t = (sqrtab_bc * x + sqrtmab_bc * noise)  
+        # This is the x_t, which is sqrt(alphabar) x_0 + sqrt(1-alphabar) * eps
         # We should predict the "error term" from this x_t. Loss is what we return.
 
         # dropout context with some probability
-        context_mask = torch.bernoulli(torch.zeros(c.shape[0]) + self.drop_prob).to(self.device)
+        # context_mask = torch.bernoulli(torch.zeros(c.shape[0]) + self.drop_prob).to(self.device)
+
+        # dont use context mask for Starmen dataset
+        context_mask = torch.zeros(c.shape[0]).to(self.device)
 
         # return MSE between added noise, and our predicted noise
         return self.loss_mse(noise, self.nn_model(x_t, c, _ts / self.n_T, context_mask))
@@ -92,7 +105,7 @@ class DDPM(nn.Module):
         context_mask = torch.zeros(c_i.shape[0]).to(device)
 
         # double the batch
-        c_i = c_i.repeat(2, 1, 1, 1, 1)
+        c_i = c_i.repeat(2, 1, 1, 1)
         context_mask = context_mask.repeat(2)
         context_mask[n_sample:] = 1.  # makes second half of batch context free
 
@@ -101,11 +114,11 @@ class DDPM(nn.Module):
         for i in range(self.n_T, 0, -1):
             print(f'sampling timestep {i}', end='\r')
             t_is = torch.tensor([i / self.n_T]).to(device)
-            t_is = t_is.repeat(n_sample, 1, 1, 1, 1)
+            t_is = t_is.repeat(n_sample, 1, 1, 1)
 
             # double batch
-            x_i = x_i.repeat(2, 1, 1, 1, 1)
-            t_is = t_is.repeat(2, 1, 1, 1, 1)
+            x_i = x_i.repeat(2, 1, 1, 1)
+            t_is = t_is.repeat(2, 1, 1, 1)
 
             z = torch.randn(n_sample, *size).to(device) if i > 1 else 0
 

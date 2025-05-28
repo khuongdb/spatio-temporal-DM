@@ -44,8 +44,8 @@ class Upsample(nn.Module):
     def __init__(self, dim, hidden_dim, dropout=0.):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Upsample(scale_factor=8, mode='nearest'),
-            Rearrange('b t (u d) -> b (u t) d', d=dim, u=8)
+            nn.Upsample(scale_factor=4, mode='nearest'),
+            Rearrange('b t (u d) -> b (u t) d', d=dim)
         )
 
     def forward(self, x):
