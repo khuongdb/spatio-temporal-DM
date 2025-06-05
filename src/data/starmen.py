@@ -6,10 +6,10 @@ from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from einops import rearrange
 import torch
-
+import logging
 
 class StarmenDataset(Dataset):
-    def __init__(self, data_dir, split="train", time=10, nb_subject=None):
+    def __init__(self, data_dir, split="train", time=10, nb_subject=None, **options):
         self.csv_path = os.path.join(data_dir, f"starmen_{split}.csv")
 
         self.datas = pd.read_csv(self.csv_path)
@@ -20,8 +20,9 @@ class StarmenDataset(Dataset):
             selected_ids = np.random.choice(self.ids, size=nb_subject, replace=False)
             self.datas = self.datas[self.datas["id"].isin(selected_ids)]
             self.ids = selected_ids
-        
 
+            logging.info(f"{split} dataset - only load {nb_subject} subjects.")
+            logging.info(f"Subject id: {self.ids}")
 
     def prepare_mask(self):
 
@@ -43,28 +44,44 @@ class StarmenDataset(Dataset):
 
     def __getitem__(self, index):
         """
-        Generates one sample of data: concatenate all data of 1 patient into 1 tensor. 
-        Return: 
+        Generates one sample of data: concatenate all data of 1 patient into 1 tensor.
+        Return:
         x: target image, shape [C, H, W]
         x_prev: previous images, shape [T-1, C, H, W]
         """
 
         index_id = self.ids[index]
-        df = self.datas[self.datas["id"] == index_id]
+        img_t = self.get_images_by_id(id=index_id)
+
+        # Random choose a target index and create missing mask
+        target_idx, mask = self.prepare_mask()
+        x_prev = np.clip(img_t[:-1] * mask[:-1, None, None, None], 0.0, 1.0)
+        x = img_t[target_idx]
+
+        item = {
+            "id": index_id,
+            "x": torch.from_numpy(x).float(),
+            "x_prev": torch.from_numpy(x_prev).float(),
+            "x_origin": torch.from_numpy(img_t).float(),
+            "target_idx": target_idx,
+            "mask": mask,
+        }
+        return item
+        # return torch.from_numpy(x).float(), torch.from_numpy(x_prev).float(), torch.from_numpy(img_t).float(), target_idx, mask
+
+    def get_images_by_id(self, id):
+        """
+        Get a sequence of 10 images for a given id in Dataset.
+        Return: np.array (t, c, h, w)
+        """
+        df = self.datas[self.datas["id"] == id]
         df.sort_values(by="age")
 
         img_ls = [np.load(i) for i in df["img_path"]]
         img_t = np.stack(img_ls, axis=0)
         # Add channel dimension c
         img_t = rearrange(img_t, "t h w -> t 1 h w")
-
-        # Random choose a target index and create missing mask
-        target_idx, mask = self.prepare_mask()
-        x_prev = np.clip(img_t[:-1] * mask[:-1, None, None, None], 0.0, 1.0)
-        x = img_t[target_idx]
-        return torch.from_numpy(x).float(), torch.from_numpy(x_prev).float()
-
-
+        return img_t
 
     def plot_data(self, index=0, save=False, show_info=False):
         """

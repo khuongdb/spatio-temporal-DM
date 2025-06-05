@@ -6,7 +6,11 @@ We can use `scp` or `rsync`.
 
 ```bash
 rsync -avzP ~/projects/data/starmen bdang@grenoble.g5k:~/project/data
+
+rsync -avxP --exclude 'data/' --exclude '.venv/' ~/projects/spartDM/ bdang@grenoble.g5k:~/project/spartDM
+
 ```
+
 Flags of `rsync`: 
 
 - `-a`: Archive mode: preserves permissions, symlinks, timestamps, groups, etc. Equivalent to -rlptgoD. It's a common choice when copying full directories.
@@ -31,15 +35,28 @@ scp source remotelogin@rhost:/tmp
 
 - With source/, the files in source are copied directly in /tmp.
 
+
+## Create symlink in cluster
+
+```bash
+ln -s ~/project/data/starmen ~/project/spartDM/data/starmen
+```
+
+-Note: this will create a new folder `starmen` in the project/data directory. 
+
 # Connect to cluster (from frontend machine)
 
 Grom grenoble, the best cluster is `kinovis` with 6 nodes - each node has 2 x L40S GPUs. 
 
 ```bash
-oarsub -q besteffort -p "cluster='kinovis'" -l "nodes=1/gpu=2" -I
+oarsub -q besteffort -p cluster='kinovis' -l "nodes=1/gpu=2" -I
 ```
 
 - `p`: property - query by SQL syntax. It is best practice to enclose query in double quote `""`.
+
+## Nancy cluster - P3 priority
+
+
 
 ## Job status - inside node
 

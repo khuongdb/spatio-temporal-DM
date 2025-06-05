@@ -1,7 +1,7 @@
 #!/bin/bash 
 
 #OAR -q besteffort 
-#OAR -p "cluster='kinovis'"
+#OAR -p cluster='kinovis'
 #OAR -l host=1/gpu=1,walltime=5:00:00
 #OAR -O oarlogs/OAR_%jobid%.out
 #OAR -E oarlogs/OAR_%jobid%.err 
@@ -32,4 +32,4 @@ uv sync
 # run script
 # module load conda
 # conda activate pytorch_env
-python3 -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))";
+python3 -m src.sadm.sadm

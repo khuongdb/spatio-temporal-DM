@@ -1,0 +1,86 @@
+name: SADM
+image_size: &image_size !!python/tuple [64, 64]
+num_frames: 9
+checkpoint_path: &checkpoint_path ./projects/autoddpm/weights/runs/
+
+#
+# Experiment
+#
+experiment:
+  name: sadm_ep300_T500_10sample
+  task: inference  ## train or inference
+  workdir: 
+
+
+
+#
+# Model
+#
+ddpm:
+  params:
+    n_T: 500
+    betas: [1.e-4, 0.02]
+    drop_prob: 0.1
+    use_context: True
+
+vivit:
+  params:
+    image_size: *image_size
+    patch_size: !!python/tuple [16, 16]
+    num_frames: 9
+    depth: 3
+    heads: 3
+    dim_head: 8
+    dropout: 0.0
+    emb_dropout: 0.0
+
+contextUNET: 
+  params:
+    in_channels: 1
+    n_feat: 8
+    in_shape: !!python/tuple [1, 64, 64]
+    is_3d: False
+
+
+trainer: 
+  nb_epoch: 300
+  learning_rate: 1.e-4
+  auto_resume: False
+  eval: False
+  eval_guide_w: 0.2
+
+
+inference: 
+  weights: 
+  outdirs: 
+  guide_w: 0.2
+
+
+
+#
+# Data
+#
+data_dir: "./data/starmen/output_random_noacc"
+train_ds: 
+  data_file: "starmen_train.csv"
+  batch_size: 10
+  nb_subject: 10
+  num_workers: 1
+  shuffle: True
+
+val_ds: 
+  data_file: "starmen_val.csv"
+  batch_size: 1
+  nb_subject: null
+  num_workers: 1
+  shuffle: False
+
+test_ds: 
+  data_file: "starmen_test.csv"
+  batch_size: 1
+  nb_subject: 1
+  num_workers: 1
+  shuffle: False
+
+
+

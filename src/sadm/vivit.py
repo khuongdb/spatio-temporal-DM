@@ -105,25 +105,32 @@ class ViViT(nn.Module):
         num_patches = int(np.prod(dhw))
         patch_dim = int(np.prod(patch_size))
 
+        # Modify from SADM paper: we dont perform Up-Down scaling for starmen dataset.
+        # since the dimension is relatively small enough (16x16 = 256). 
+        #
+
         # 1-Image patch embedding - downscale the dimension of input
         # !TODO: make the down_scale the argument of model - more dynamic.
         self.to_patch_embedding = nn.Sequential(
             reshape_fnc,
-            nn.Linear(patch_dim, patch_dim // 4),
+            # nn.Linear(patch_dim, patch_dim // 4),
+            nn.Linear(patch_dim, patch_dim),
         )
 
         # 2-Multihead spartial-temporal attention layers. 
-        self.temporal_dims = [patch_dim // (4 ** (i + 1)) for i in range(depth + 1)]
-        self.space_dims = [num_patches * num_frames for i in range(depth + 2)]
+
+        # self.temporal_dims = [patch_dim // (4 ** (i + 1)) for i in range(depth + 1)]
+        self.temporal_dims = [patch_dim // (4 ** i) for i in range(depth + 1)]
+        self.space_dims = [num_patches * num_frames for i in range(depth + 1)]
 
         self.pos_embedding = nn.Parameter(
-            torch.randn(1, num_frames, num_patches, patch_dim // 4)
+            torch.randn(1, num_frames, num_patches, patch_dim)
         )
         self.temporal_transformer = Transformer(
             self.temporal_dims, depth, heads, dim_head, dropout, direction="down"
         )
         self.space_transformer = Transformer(
-            self.space_dims, depth + 1, heads, dim_head, dropout, direction="up"
+            self.space_dims, depth, heads, dim_head, dropout, direction="up"
         )
 
         self.dropout = nn.Dropout(emb_dropout)
@@ -173,7 +180,9 @@ class ViViT(nn.Module):
         x += self.pos_embedding
         x = self.dropout(x)
         x = rearrange(x, "b t n d -> b (t n) d")
+        # x = rearrange(x, "b t n d -> (b n) t d")
         x = self.temporal_transformer(x)
-        x = rearrange(x, "b (t n) d -> b d (t n)", b=b, t=t, n=n)
+        x = rearrange(x, 'b (t n) d -> b d (t n)', b=b, t=t, n=n)
+        # x = rearrange(x, "(b n) t d -> (b t) n d", b=b, t=t, n=n)
         x = self.space_transformer(x)
         return self.conv(x)

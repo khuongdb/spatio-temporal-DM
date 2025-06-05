@@ -179,4 +179,8 @@ cython_debug/
 
 # data folder
 data/
+
+
+# output folder
+workdir/
 outdirs/
