@@ -1,7 +1,7 @@
 #!/bin/bash 
 
 #OAR -q besteffort 
-#OAR -p cluster='kinovis'
+#OAR -p cluster='graffiti'
 #OAR -l host=1/gpu=1,walltime=5:00:00
 #OAR -O oarlogs/OAR_%jobid%.out
 #OAR -E oarlogs/OAR_%jobid%.err 
@@ -30,6 +30,6 @@ uv sync
 
 
 # run script
-# module load conda
-# conda activate pytorch_env
-python3 -m src.sadm.sadm
+
+# python3 -m src.sadm.sadm
+python3 -m src.monai.ddpm

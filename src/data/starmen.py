@@ -9,8 +9,11 @@ import torch
 import logging
 
 class StarmenDataset(Dataset):
-    def __init__(self, data_dir, split="train", time=10, nb_subject=None, **options):
-        self.csv_path = os.path.join(data_dir, f"starmen_{split}.csv")
+    def __init__(self, data_dir, split="train", csv_path=None, time=10, nb_subject=None, save_data=True, workdir="workdir", **options):
+        if csv_path: 
+            self.csv_path = csv_path
+        else: 
+            self.csv_path = os.path.join(data_dir, f"starmen_{split}.csv")
 
         self.datas = pd.read_csv(self.csv_path)
         self.ids = self.datas["id"].unique()
@@ -20,9 +23,13 @@ class StarmenDataset(Dataset):
             selected_ids = np.random.choice(self.ids, size=nb_subject, replace=False)
             self.datas = self.datas[self.datas["id"].isin(selected_ids)]
             self.ids = selected_ids
-
-            logging.info(f"{split} dataset - only load {nb_subject} subjects.")
+            logging.info(f"Train dataset - only load {nb_subject} subjects.")
             logging.info(f"Subject id: {self.ids}")
+
+            if save_data: 
+                save_path = os.path.join(workdir, f"starmen_{split}.csv")
+                self.datas.to_csv(save_path, index=False)
+
 
     def prepare_mask(self):
 

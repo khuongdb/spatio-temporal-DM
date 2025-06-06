@@ -17,6 +17,7 @@ from einops import rearrange
 
 import argparse
 import logging
+from src.sadm.utils import get_logger
 
 import yaml
 
@@ -54,15 +55,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def save_ckp(state, step, checkpoint_dir, epoch):
+def save_ckp(state, step=None, checkpoint_dir="workdir/", epoch=0):
     """
     Save latest checkpoint after each epoch.
     """
     ckpt_path = os.path.join(checkpoint_dir, "latest.pt")
     torch.save(state, ckpt_path)
-    if (epoch % step == 0) and (epoch != 0):
-        f_path = os.path.join(checkpoint_dir, f"ep_{epoch}.pt")
-        shutil.copyfile(ckpt_path, f_path)
+    if step: 
+        if (epoch % step == 0) and (epoch != 0):
+            f_path = os.path.join(checkpoint_dir, f"ep_{epoch}.pt")
+            shutil.copyfile(ckpt_path, f_path)
     # if is_best:
     #     best_fpath = os.path.join(checkpoint_dir, "latest.pt")
     #     shutil.copyfile(f_path, best_fpath)
@@ -114,6 +116,9 @@ def train(
 
     # x_val, x_prev_val = next(iter(val_loader))
     # x_prev_val = x_prev_val.to(device)
+
+    # setup logger
+    logger = get_logger("train", workdir)
 
     vivit_model = ViViT(**vivit_args)
     nn_model = ContextUnet(**unet_args)
@@ -189,11 +194,11 @@ def train(
             print(f"avg_val_loss: {avg_val_loss:.4f}")
             
             # Log infos
-            logging.info(
+            logger.info(
                 f"Epoch {ep+1}/{nb_epoch} - train_loss: {loss:.4f} - train_loss_ema: {loss_ema:.4f} - val_avg_loss: {avg_val_loss:.4f}"
             )
         else: 
-            logging.info(
+            logger.info(
                 f"Epoch {ep+1}/{nb_epoch} - train_loss: {loss:.4f} - train_loss_ema: {loss_ema:.4f}"
             )
 
@@ -203,7 +208,7 @@ def train(
             "state_dict": ddpm.state_dict(),
             "optimizer": optim.state_dict(),
         }
-        save_ckp(checkpoint, step=10, checkpoint_dir=ckpt_path, epoch=ep)
+        save_ckp(checkpoint, step=None, checkpoint_dir=ckpt_path, epoch=ep)
 
 
 
@@ -222,12 +227,15 @@ def inference(
 
     assert os.path.exists(weights), f"Weights does not exist at {weights}"
 
+    # setup logger
+    logger = get_logger("inference", workdir)
 
     # Load weights
-    ddpm_model, optim, start_ep = load_ckp(weights=weights, 
+    ddpm_model, optim, start_ep = load_ckp(checkpoint_path=weights, 
                                            model=ddpm_model,
                                            device=device)
     ddpm_model.eval()
+    logger.info(f"Load weight from {weights}")
 
     # Inference loop
     os.makedirs(outdir, exist_ok=True)
@@ -256,7 +264,7 @@ def inference(
                         x_prev_i, "t c h w -> 1 t c h w"
                     ).float()  # work around because ddpm.sample operate on batch.
                     # print(x_prev_i.shape)
-                    x_gen_i, _ = ddpm_model.sample(x_prev_i, device=device, guide_w=0.2)
+                    x_gen_i, _ = ddpm_model.sample(x_prev_i, device=device, guide_w=guide_w)
                     x_gen[i] = x_gen_i.squeeze(0)
                     # print(x_prev_i.shape)
                     # x_gen_i, _ = ddpm.sample(x_prev_i, device, guide_w=0.2)
@@ -268,7 +276,7 @@ def inference(
             x_masked_np = x_masked_np.cpu().detach().numpy()
             np.save(os.path.join(outdir, f"x_masked_{idx:03}.npy"), x_masked_np)
 
-            logging.info(f"Saved masked_input and generated sample {idx:03} to {outdir}")
+            logger.info(f"Saved masked_input and generated sample {idx:03} to {outdir}")
 
 
 
@@ -314,14 +322,15 @@ if __name__ == "__main__":
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(f"{workdir}/training.log", mode="w"),
+            logging.FileHandler(f"{workdir}/logging.log"),
             logging.StreamHandler(),
         ],
     )
+    # logger = get_logger("experiment", workdir, log_level)
     
 
     logging.info(
-        "------------------------------- LONGITUDINAL DIFFUSION MODEL  -------------------------------"
+        "------------------------------- SEQUENCE AWARE DIFFUSION MODEL  -------------------------------"
     )
     logging.info(f"Success: Loaded configuration file at: {args.config}")
 
@@ -330,23 +339,27 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Device: {device}")
     data_dir = config.get("data_dir", None)
-    assert os.path.isdir(data_dir), f"{data_dir} is not a directory."
+    assert os.path.isdir(data_dir), logging.error(f"{data_dir} is not a directory.")
 
 
     if exp["task"] == "train":
-        print("Start training")
+        logging.info("TRAINING")
 
         train_ds = StarmenDataset(data_dir=data_dir, 
                                   split="train", 
-                                  nb_subject=config["train_ds"]["nb_subject"])
+                                  nb_subject=config["train_ds"]["nb_subject"],
+                                  workdir=workdir)
         train_loader = DataLoader(train_ds, 
                                   batch_size=config["train_ds"]["batch_size"],
                                   shuffle=config["train_ds"]["shuffle"], 
                                   num_workers=config["train_ds"]["num_workers"])
+        # logger.info(f"Load dataset {train_loader}")
+        # if config["train_ds"]["nb_subject"]:
 
         val_ds = StarmenDataset(data_dir=data_dir, 
                                 split="val", 
-                                nb_subject=config["val_ds"]["nb_subject"])
+                                nb_subject=config["val_ds"]["nb_subject"],
+                                workdir=workdir)
         val_loader = DataLoader(val_ds, 
                                 batch_size=config["val_ds"]["batch_size"],
                                 shuffle=config["val_ds"]["shuffle"], 
@@ -362,20 +375,24 @@ if __name__ == "__main__":
         )
 
     elif exp["task"] == "inference":
+        logging.info("INFERENCE")
         if not config["inference"].get("weights", None):
             config["inference"]["weights"] = os.path.join(workdir, "ckpt", "latest.pt")
-
-        if not config["inference"].get("outdirs", None):
-            config["inference"]["outdirs"] = os.path.join(workdir, "samples")
+        if not config["inference"].get("outdir", None):
+            config["inference"]["outdir"] = os.path.join(workdir, "samples")
 
         # Load test dataset
+        csv_path = config["test_ds"].get("csv_path", None)
         test_dataset = StarmenDataset(data_dir=data_dir, 
                                       split="test", 
+                                      workdir=workdir,
+                                      csv_path=csv_path,
                                       nb_subject=config["test_ds"]["nb_subject"])
         test_loader = DataLoader(test_dataset, 
                                 batch_size=config["test_ds"]["batch_size"],
                                 shuffle=config["test_ds"]["shuffle"], 
-                                num_workers=config["test_ds"]["num_workers"])        )
+                                num_workers=config["test_ds"]["num_workers"])        
+        logging.info(f"Load test dataset {test_loader}")
 
         # Define models
         #!TODO: move this to main() to use for both train() and inference()
@@ -389,8 +406,8 @@ if __name__ == "__main__":
         )
         ddpm.to(device)
 
-        inference(test_loader = None, 
-                  device="cpu",
+        inference(test_loader = test_loader, 
+                  device=device,
                   ddpm_model=ddpm,
                   **config["inference"])
         

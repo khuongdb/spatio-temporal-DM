@@ -7,7 +7,7 @@ We can use `scp` or `rsync`.
 ```bash
 rsync -avzP ~/projects/data/starmen bdang@grenoble.g5k:~/project/data
 
-rsync -avxP --exclude 'data/' --exclude '.venv/' ~/projects/spartDM/ bdang@grenoble.g5k:~/project/spartDM
+rsync -avxP --exclude '/data/' --exclude '.venv/' ~/projects/spartDM/ bdang@grenoble.g5k:~/project/spartDM
 
 ```
 
@@ -22,6 +22,8 @@ Flags of `rsync`:
 - `-P`:	A shortcut for two flags:
 	    --partial: keep partially transferred files if the transfer is interrupted (so it can resume).
 	    --progress: show progress during transfer.
+
+- `--delete`: mirror exactly the source and destination. If files are deleted in source -> delete these in destination. 
 
 - With `scp`: 
 
@@ -43,6 +45,14 @@ ln -s ~/project/data/starmen ~/project/spartDM/data/starmen
 ```
 
 -Note: this will create a new folder `starmen` in the project/data directory. 
+
+
+## Sync workdir from cluster to local to get the result
+
+```bash
+rsync -avxP  bdang@grenoble.g5k:~/project/spartDM/workdir/ ~/projects/spartDM/workdir
+```
+
 
 # Connect to cluster (from frontend machine)
 

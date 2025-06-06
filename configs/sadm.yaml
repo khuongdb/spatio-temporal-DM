@@ -7,7 +7,7 @@ checkpoint_path: &checkpoint_path ./projects/autoddpm/weights/runs/
 # Experiment
 #
 experiment:
-  name: sadm_ep300_T500_10sample
+  name: sadm_ep1000_T500_10sample
   task: inference  ## train or inference
   workdir: 
 
@@ -43,7 +43,7 @@ contextUNET:
 
 
 trainer: 
-  nb_epoch: 300
+  nb_epoch: 1000
   learning_rate: 1.e-4
   auto_resume: False
   eval: False
@@ -52,8 +52,8 @@ trainer:
 
 inference: 
   weights: 
-  outdirs: 
-  guide_w: 0.2
+  outdir: 
+  guide_w: 1.0
 
 
 
@@ -63,8 +63,8 @@ inference:
 data_dir: "./data/starmen/output_random_noacc"
 train_ds: 
   data_file: "starmen_train.csv"
-  batch_size: 10
-  nb_subject: 10
+  batch_size: 5
+  nb_subject: 5
   num_workers: 1
   shuffle: True
 
@@ -77,6 +77,7 @@ val_ds:
 
 test_ds: 
   data_file: "starmen_test.csv"
+  csv_path: "workdir/sadm_ep1000_T500_10sample/starmen_train.csv"
   batch_size: 1
   nb_subject: 1
   num_workers: 1
