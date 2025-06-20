@@ -32,22 +32,7 @@ source .venv/bin/activate
 
 # run script
 
-# # TRAIN SCRIPT
-# python3 -m src.monai.sadm \
-#         --job_type="train" \
-#         --experiment="sadm_ctx_crssattn_nodrop_ep1000"
-
-
-
-# # Train simple DDPM 
-# python3 -m src.monai.ddpm \
-#         --experiment="ddpm_ep200"
-
-# Inference
-python3 -m src.monai.diffae_resnet18 \
+# INFERENCE
+python3 -m src.monai.sadm \
         --job_type="inference" \
-        --workdir="workdir/diffae_resnet18_ep1000" \
-        --experiment="diffae_resnet18_ep1000" \
-        --checkpoint="workdir/diffae_resnet18_ep1000/ckpt/best.pth" 
-        # --datasplit="darkcircle15" \
-        
+        --workdir="workdir/sadm_ctx_crssattn_ep1000"

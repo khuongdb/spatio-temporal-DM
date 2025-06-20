@@ -8,16 +8,30 @@ from einops import rearrange
 import torch
 import logging
 
+
 class StarmenDataset(Dataset):
-    def __init__(self, data_dir, split="train", csv_path=None, time=10, nb_subject=None, save_data=True, workdir="workdir", **options):
-        if csv_path: 
+    def __init__(
+        self,
+        data_dir,
+        split="train",
+        csv_path=None,
+        time=10,
+        nb_subject=None,
+        save_data=True,
+        workdir="workdir",
+        mask_prob=0.5, 
+        **options,
+    ):
+        if csv_path:
             self.csv_path = csv_path
-        else: 
+        else:
             self.csv_path = os.path.join(data_dir, f"starmen_{split}.csv")
 
         self.datas = pd.read_csv(self.csv_path)
         self.ids = self.datas["id"].unique()
         self.time = time
+        self.mask_prob = mask_prob
+        self.type = split
 
         if nb_subject:
             selected_ids = np.random.choice(self.ids, size=nb_subject, replace=False)
@@ -26,21 +40,32 @@ class StarmenDataset(Dataset):
             logging.info(f"Train dataset - only load {nb_subject} subjects.")
             logging.info(f"Subject id: {self.ids}")
 
-            if save_data: 
+            if save_data:
                 save_path = os.path.join(workdir, f"starmen_{split}.csv")
                 self.datas.to_csv(save_path, index=False)
 
 
     def prepare_mask(self):
 
-        target_idx = np.random.randint(1, self.time)
+        if self.type == "test": 
+            # At inference, we take the last frame as target index, and mask the previous frames with mask_prob
+            target_idx = self.time - 1
+        else: 
+            target_idx = np.random.randint(1, self.time)
         missing_mask = [1]
         if target_idx > 1:
             if target_idx > 2:
-                missing_mask = np.append(
-                    missing_mask, np.random.randint(0, 2, size=(target_idx - 2,))
+                # Generate mask with probability mask_prob
+                # mask = 1: sample is present.
+                # mask = 0: sample is masked.
+                rand_mask = np.random.binomial(1, self.mask_prob, size=target_idx - 2).astype(
+                    np.float32
                 )
+                missing_mask = np.append(missing_mask, rand_mask)
+
             missing_mask = np.append(missing_mask, [1])
+        
+        # Fill the rest with 0 - mask all the future frames. 
         missing_mask = np.append(
             missing_mask, np.zeros(self.time - len(missing_mask))
         ).astype(np.float32)

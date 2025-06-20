@@ -5,9 +5,9 @@ We can use `scp` or `rsync`.
 - With `rsync`: 
 
 ```bash
-rsync -avzP ~/projects/data/starmen bdang@grenoble.g5k:~/project/data
+rsync -avzPL ~/projects/spartDM/data/starmen bdang@grenoble.g5k:~/project/data
 
-rsync -avxP --exclude '/data/' --exclude '.venv/' ~/projects/spartDM/ bdang@grenoble.g5k:~/project/spartDM
+rsync -avzP --exclude '/data/' --exclude '.venv/' --exclude '/archive/' ~/projects/spartDM/ bdang@grenoble.g5k:~/project/spartDM
 
 ```
 
@@ -41,7 +41,7 @@ scp source remotelogin@rhost:/tmp
 ## Create symlink in cluster
 
 ```bash
-ln -s ~/project/data/starmen ~/project/spartDM/data/starmen
+ln -s ~/project/data/starmen ~/project/spartDM/data/
 ```
 
 -Note: this will create a new folder `starmen` in the project/data directory. 
@@ -50,7 +50,7 @@ ln -s ~/project/data/starmen ~/project/spartDM/data/starmen
 ## Sync workdir from cluster to local to get the result
 
 ```bash
-rsync -avxP  bdang@grenoble.g5k:~/project/spartDM/workdir/ ~/projects/spartDM/workdir
+rsync -avxP  bdang@grenoble.g5k:~/project/spartDM/{workdir,oarlogs} ~/projects/spartDM/
 ```
 
 
