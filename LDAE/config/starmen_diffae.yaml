@@ -1,0 +1,163 @@
+# config.yaml
+fit: 
+    seed_everything: 42
+    model:
+        class_path: src.ldae.LatentDiffusionAutoencoders2D
+        init_args:
+            spartial_dim: 2  # 2 (2D images) or 3 (3D MRI scan)
+            mode: representation-learning # pretrain or representation-learning
+            pretrained_path: ${fit.trainer.logger.init_args.save_dir}/pretrain/checkpoints/best.ckpt
+            unet_args:
+                input_channel: 1
+                base_channel: 32
+                channel_multiplier: [1, 2, 3]
+                num_residual_blocks_of_a_block: 1
+                attention_resolutions: [2, 4]
+                num_heads: 1
+                head_channel: -1
+                use_new_attention_order: False
+                dropout: 0.0
+                dims: 2
+            enc_args:
+                backbone_args:
+                    net_class_path: torchvision.models.convnext_small
+                    weights: torchvision.models.ConvNeXt_Small_Weights.DEFAULT
+                    # other option:
+                    # net_class_path: torchvision.models.resnet18
+                    # weights: torchvision.models.ResNet18_Weights.DEFAULT
+                    freeze_perc: 0.0
+                    grayscale: True
+                emb_chans: 512
+                seq_len: 128
+            timesteps_args:
+                timesteps: 1000
+                betas_type: linear
+            lr: 2.5e-5
+            ema_decay: 0.999
+            ema_update_after_step: 10
+    data:
+        data_dir: "data/starmen/output_random_noacc"
+        train_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "train"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        val_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "val"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        test_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "test"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        batch_size: 
+            train: 2
+            val: 2
+            test: 1
+        num_workers: 5
+        shuffle: 
+            train: True
+            val: False
+            test: False
+    trainer:
+        accelerator: auto
+        devices: auto
+        max_epochs: 500
+        logger:
+            class_path: lightning.pytorch.loggers.TensorBoardLogger
+            init_args:
+                save_dir: "workdir/diffar_starmen"
+                name: ${fit.model.init_args.mode}
+        precision: 16-mixed
+        gradient_clip_val: 1.0
+        check_val_every_n_epoch: 10
+        # fast_dev_run: 1
+        # limit_train_batches: 4
+        # limit_val_batches: 1
+        num_sanity_val_steps: 0
+        # enable_progress_bar: true  # disable prog_bar in non-interactive mode on cluster. 
+    early_stopping:
+        monitor: train_loss
+        patience: 100
+        mode: min
+        verbose: true
+    model_checkpoint:
+        monitor: train_loss
+        mode: min
+        auto_insert_metric_name: false
+        save_top_k: 1
+        filename: best
+        save_last: true
+        dirpath: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/
+test: 
+    seed_everything: 42
+    model:
+        class_path: src.ldae.LatentDiffusionAutoencoders2D
+        init_args:
+            spartial_dim: 2  # 2 (2D images) or 3 (3D MRI scan)
+            mode: representation-learning # pretrain or representation-learning
+            pretrained_path: ${fit.trainer.logger.init_args.save_dir}/pretrain/checkpoints/best.ckpt
+            unet_args:
+                input_channel: 1
+                base_channel: 32
+                channel_multiplier: [1, 2, 3]
+                num_residual_blocks_of_a_block: 1
+                attention_resolutions: [2, 4]
+                num_heads: 1
+                head_channel: -1
+                use_new_attention_order: False
+                dropout: 0.0
+                dims: 2
+            enc_args:
+                backbone_args:
+                    net_class_path: torchvision.models.convnext_small
+                    weights: torchvision.models.ConvNeXt_Small_Weights.DEFAULT
+                    # other option:
+                    # net_class_path: torchvision.models.resnet18
+                    # weights: torchvision.models.ResNet18_Weights.DEFAULT
+                    freeze_perc: 0.0
+                    grayscale: True
+                emb_chans: 512
+                seq_len: 128
+            timesteps_args:
+                timesteps: 1000
+                betas_type: linear
+            lr: 2.5e-5
+            ema_decay: 0.999
+            ema_update_after_step: 10
+            log_img_every_epoch: 10
+            test_ddim_style: ddim500
+    data:
+        data_dir: ${fit.data.data_dir}
+        test_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "test"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        batch_size: 
+            test: 1
+        num_workers: 5
+        shuffle: 
+            test: False
+    trainer:
+        accelerator: auto
+        devices: [0]
+        max_epochs: 500
+        logger:
+            class_path: lightning.pytorch.loggers.TensorBoardLogger
+            init_args:
+                save_dir: ${fit.trainer.logger.init_args.save_dir}
+                name: test_${test.model.init_args.test_ddim_style}
+        precision: 16-mixed
+        gradient_clip_val: 1.0
+        num_sanity_val_steps: 0
+        # enable_progress_bar: true  # disable prog_bar in non-interactive mode on cluster. 
+    early_stopping:
+        monitor: test_ssim_ldae_original
+    ckpt_path: ${fit.trainer.logger.init_args.save_dir}/representation-learning/checkpoints/best.ckpt

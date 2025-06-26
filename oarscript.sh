@@ -43,11 +43,14 @@ source .venv/bin/activate
 # python3 -m src.monai.ddpm \
 #         --experiment="ddpm_ep200"
 
-# Inference
-python3 -m src.monai.diffae_resnet18 \
-        --job_type="inference" \
-        --workdir="workdir/diffae_resnet18_ep1000" \
-        --experiment="diffae_resnet18_ep1000" \
-        --checkpoint="workdir/diffae_resnet18_ep1000/ckpt/best.pth" 
-        # --datasplit="darkcircle15" \
-        
+# # Inference
+# python3 -m src.monai.diffae_resnet18 \
+#         --job_type="inference" \
+#         --workdir="workdir/diffae_resnet18_ep1000" \
+#         --experiment="diffae_resnet18_ep1000" \
+#         --checkpoint="workdir/diffae_resnet18_ep1000/ckpt/best.pth" \
+#         --datasplit="train"
+
+
+# TRAIN DiffAE - Starmen with Pytorch CLI
+python3 LDAE/main_diffae.py --config LDAE/config/starmen_diffae.yaml test
