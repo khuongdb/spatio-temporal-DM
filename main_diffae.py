@@ -37,10 +37,10 @@ class MyCLI(LightningCLI):
 
         # Fix for CPU: devices must be an int > 0
         if not torch.cuda.is_available():
-            stage_conf['devices'] = 1
+            stage_conf['trainer']['devices'] = 1
 
         # access fully resolved config after CLI overrides
-        # only apply to test stage
+        # only apply for test stage
         if stage == "test":
             ddim_style = stage_conf["model"]["init_args"]["test_ddim_style"]
             split = stage_conf["data"]["test_ds"]["split"]
@@ -72,6 +72,8 @@ if __name__ == '__main__':
     import sys
     import os
     sys.path.append(os.getcwd())
+
+    from lightning.pytorch.utilities.model_summary import ModelSummary
 
     cli_main()
 

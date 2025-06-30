@@ -746,7 +746,7 @@ class GaussianDiffusion:
             z = encoder(x_0)
         new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
         ddim = DDIM(new_betas, timestep_map, self.device)
-        return ddim.shift_ddim_encode_loop(decoder, z, x_0)
+        return ddim.shift_ddim_encode_loop(decoder, z, x_0, disable_tqdm=True)
 
     def latent_representation_learning_ddim_encode(self, ddim_style, encoder, decoder, x_0, z_0, style=None, disable_tqdm=False):
         """
@@ -767,8 +767,8 @@ class GaussianDiffusion:
         Returns:
             torch.Tensor: Encoded latent in noise space
         """
-        if style is None:
-            style = encoder(x_0)
+        if z_0 is None:
+            z_0 = encoder(x_0)
         new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
         ddim = DDIM(new_betas, timestep_map, self.device)
         return ddim.shift_ddim_encode_loop(decoder, style, z_0, disable_tqdm=disable_tqdm)

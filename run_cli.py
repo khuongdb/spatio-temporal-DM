@@ -15,64 +15,47 @@
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from src.utils.progress_bar import MyProgressBar
-from src.data.datamodules import StarmenDataModule
-from src.ldae.ldae_2d import LatentDiffusionAutoencoders2D
+from src.data.datamodules import BrainMRDataModule
 import os
 import resource
 import torch
 
 
 class MyCLI(LightningCLI):
-
-    def before_instantiate_classes(self):
-        """
-        Handle the problem with selecting devices if running on cpu (cannot take the list [0] as running on gpu)
-        """
-        # check if the config.yaml in format stage: Namespace
-        stage = self.config.subcommand
-        stage_conf = self.config.get(stage, None)
-        if stage_conf is None: 
-            # trainer = self.config["trainer"]
-            stage_conf = self.config
-
-        # Fix for CPU: devices must be an int > 0
-        if not torch.cuda.is_available():
-            stage_conf['devices'] = 1
-
-        # access fully resolved config after CLI overrides
-        # only apply to test stage
-        if stage == "test":
-            ddim_style = stage_conf["model"]["init_args"]["test_ddim_style"]
-            split = stage_conf["data"]["test_ds"]["split"]
-            stage_conf["trainer"]["logger"]["init_args"]["name"] = f"test_{split}_{ddim_style}"
-
-
     def add_arguments_to_parser(self, parser):
         parser.add_lightning_class_args(MyProgressBar, nested_key='progress_bar')
         parser.add_lightning_class_args(EarlyStopping, nested_key='early_stopping')
         parser.add_lightning_class_args(ModelCheckpoint, nested_key='model_checkpoint')
 
 
-
 def cli_main():
-    # rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-    # resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
-    # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    # os.environ["TORCH_CUDNN_SDPA_ENABLED"] = "1"
-    # torch.set_float32_matmul_precision("high")
+    rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["TORCH_CUDNN_SDPA_ENABLED"] = "1"
+    torch.set_float32_matmul_precision("high")
     cli = MyCLI(
-        datamodule_class=StarmenDataModule,
+        datamodule_class=BrainMRDataModule,
+        trainer_defaults={
+            "logger": {
+                "class_path": "lightning.pytorch.loggers.WandbLogger",
+                "init_args": {
+                    "project": "<DEFAULT_PROJECT_ISTANCE>",
+                    "name": "<DEFAULT_PROJECT_NAME>",
+                }
+            },
+            "strategy": {
+                "class_path": "lightning.pytorch.strategies.DDPStrategy",
+                "init_args": {
+                    "find_unused_parameters": True
+                }
+            }
+        },
         parser_kwargs={"parser_mode": "omegaconf"},
-        save_config_kwargs={"overwrite": True},
-    )    
+        save_config_kwargs={"overwrite": True}
+    )
     return cli
 
 
 if __name__ == '__main__':
-    import sys
-    import os
-    sys.path.append(os.getcwd())
-
     cli_main()
-
-

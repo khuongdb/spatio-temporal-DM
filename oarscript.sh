@@ -3,7 +3,7 @@
 #OAR -q besteffort 
 #OAR -p gpu
 ##OAR -p cluster='graffiti'
-#OAR -l host=1,walltime=5:00:00
+#OAR -l host=1/gpu=1,walltime=5:00:00
 #OAR -O oarlogs/OAR_%jobid%.out
 #OAR -E oarlogs/OAR_%jobid%.err 
 
@@ -53,4 +53,4 @@ source .venv/bin/activate
 
 
 # TRAIN DiffAE - Starmen with Pytorch CLI
-python3 LDAE/main_diffae.py --config LDAE/config/starmen_diffae.yaml test
+python3 main_diffae.py --config configs/diffae_repr_learn.yaml fit

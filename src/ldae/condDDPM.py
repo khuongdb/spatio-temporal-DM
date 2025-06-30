@@ -1,6 +1,8 @@
 # Modify from LDAE 
 # This model works with 2D toy example (Starmen) dataset so we dont need the AEKL module to calculate latent space. 
-
+# This is the conditioned DDPM (DDIM) model. Instead of pretraining an unconditional model 
+# and then finetune using gradient estimator network, we train the model from scratch directly with conditional signal from clean input x0
+# The idea inspired from DiffAE and cDDPMS. 
 
 
 # Copyright (c) 2025 Gabriele Lozupone (University of Cassino and Southern Lazio).
@@ -21,16 +23,19 @@ import lightning as L
 import torch
 # import wandb
 import copy  # For copying model parameters
+import os
 
-from src.ldae.nets import AttentionSemanticEncoder
-from src.ldae.nets import UNet, ShiftUNet
+from src.ldae.nets import AttentionSemanticEncoder, SemanticEncoder
+from src.ldae.nets import UNet, ShiftUNet, CondUNet
 from src.ldae.diffusion import GaussianDiffusion
 from generative.networks.nets import AutoencoderKL
 from generative.metrics import SSIMMetric, MultiScaleSSIMMetric, FIDMetric
 from generative.losses import PerceptualLoss
 from einops import rearrange
+import numpy as np
+from src.utils import plot_comparison_starmen
 
-class LatentDiffusionAutoencoders2D(L.LightningModule):
+class CondDDPM(L.LightningModule):
     def __init__(self,
                  spartial_dim: int = 2,
                  enc_args: dict = None,
@@ -45,6 +50,28 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                  ema_update_after_step: int = 1,
                  log_img_every_epoch: int = 10,
                  test_ddim_style: str = "ddim100"):
+        """
+            Initialize Conditional DDPMs LightningModule.
+
+            Parameters
+            ----------
+            spartial_dim : Number of spatial dimensions of the input data (e.g., 2 for images, 3 for volumetric data).
+            enc_args : Dictionary of arguments for the encoder network configuration.
+            unet_args : Dictionary of arguments for the U-Net architecture configuration.
+            vae_args : Dictionary of arguments for the Variational Autoencoder (VAE) configuration.
+            vae_path : str, optional. Path to a pretrained VAE model checkpoint to load.
+            timesteps_args : define diffusion timesteps. It's dict require: the number of timesteps (timesteps, default 1000) 
+                and betas schedule type (betas_type - default "linear")
+            lr : Learning rate for the optimizer.
+            mode : Mode of operation, e.g., "pretrain" or "representation-learning"
+            pretrained_path : if mode == "representation-learning", path to a pretrained diffusion model checkpoint.
+            ema_decay : Exponential moving average (EMA) decay rate for model parameters.
+            ema_update_after_step : Number of steps (not epoch) after which EMA updates start.
+            log_img_every_epoch : Frequency (in epochs) of logging reconstructed images for visualization.
+            test_ddim_style : String in format "ddim<nb of infer step> during inference with DDIM sampling. 
+                For example: "ddim100" for 100 DDIM sampling steps. 
+
+        """
         super().__init__()
         # self.example_input_array = torch.Tensor(2, 10, 1, 64, 64)  # [B, T, C, H, W]
         self.spartial_dim = spartial_dim
@@ -54,6 +81,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
         self.timesteps_args = timesteps_args
         self.ema_decay = ema_decay
         self.ema_update_after_step = ema_update_after_step
+        self.test_ddim_style = test_ddim_style
 
         # Set the metrics
         self.ssim = SSIMMetric(spatial_dims=self.spartial_dim, data_range=1.0, kernel_size=4)
@@ -95,7 +123,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
 
         # ------------------- Pretrain Models -------------------
         if mode == "pretrain":
-            self.unet = UNet(**unet_args)
+            self.unet = CondUNet(**unet_args)
 
             # Create EMA copy of UNet (disable grad, so it won't update by backprop)
             self.ema_unet = copy.deepcopy(self.unet).eval()
@@ -104,26 +132,27 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
 
         # ------------------- Representation-Learning Models -------------------
         elif mode == "representation-learning":
-            # Load the pretrained denoising model
-            weights = None
-            try:
-                data = torch.load(pretrained_path, map_location=self.device)
-                weights = {key.replace('ema_unet.', ''): value for key, value in data['state_dict'].items()}
-            except FileNotFoundError:
-                print(f"Pretrained model not found at {pretrained_path}")
-            # ShiftUNet decoder
-            self.decoder = ShiftUNet(
+            # # Load the pretrained denoising model
+            # weights = None
+            # try:
+            #     data = torch.load(pretrained_path, map_location=self.device)
+            #     weights = {key.replace('ema_unet.', ''): value for key, value in data['state_dict'].items()}
+            # except FileNotFoundError:
+            #     print(f"Pretrained model not found at {pretrained_path}")
+
+            # CondUNet decoder
+            self.decoder = CondUNet(
                 latent_dim=enc_args["emb_chans"],
                 **unet_args,
             )
-            if weights is not None:
-                self.decoder.load_state_dict(weights, strict=False)
-                print("Successfully loaded the pretrained decoder model.")
-            else:
-                print("No weights loaded for the decoder.")
+            # if weights is not None:
+            #     self.decoder.load_state_dict(weights, strict=False)
+            #     print("Successfully loaded the pretrained decoder model.")
+            # else:
+            #     print("No weights loaded for the decoder.")
 
             # Semantic encoder
-            self.encoder = AttentionSemanticEncoder(**enc_args)
+            self.encoder = SemanticEncoder(**enc_args)
 
             # Create EMA copies (disable grad, so they won't update by backprop)
             self.ema_encoder = copy.deepcopy(self.encoder).eval()
@@ -150,7 +179,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
 
         if self.mode == "representation-learning":
             self.encoder.train()
-            self.decoder.set_train_mode()
+            self.decoder.train()
             print("Encoder and decoder set to training mode.")
 
     def on_test_start(self) -> None:
@@ -158,8 +187,9 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             self.timesteps_args, device=self.device
         )
         # Add LPIPS metric
-        self.lpips = PerceptualLoss(spatial_dims=2,
+        self.lpips = PerceptualLoss(spatial_dims=self.spartial_dim,
                                     network_type="squeeze",
+                                    is_fake_3d=True if self.spartial_dim == 3 else False,
                                     fake_3d_ratio=0.5)
         self.lpips = self.lpips.to(self.device)
         print("LPIPS model loaded successfully.")
@@ -175,6 +205,18 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             print("Deleted encoder and decoder models, maintaining only EMA models.")
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
+        
+        # Init array to store reconstruction result
+        self.recons_np = []
+        self.recons_semantic_np = [] 
+        self.recons_idx = []
+        self.origins = []  # we dont need to store the origin, this is just to calculate histogram at on_test_epoch_end
+        self.result_path = os.path.join(
+            self.trainer.logger.save_dir,
+            self.trainer.logger.name,
+            "results"
+        )
+        os.makedirs(self.result_path, exist_ok=True)
 
     @torch.no_grad()
     def decode(self, z):
@@ -217,10 +259,11 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             if self.vae is None: 
                 # we train directly on original images (PDAE)
                 # x0 = z0.clone().detach().requires_grad_(z0.requires_grad)
-                output = self.gaussian_diffusion.representation_learning_train_one_batch(
-                    encoder=self.encoder, 
-                    decoder=self.decoder,
-                    x_0=z0
+                cond = self.encoder(z0)
+                output = self.gaussian_diffusion.regular_train_one_batch(
+                    denoise_fn=self.decoder, 
+                    x_0=z0,
+                    condition=cond
                 )
             elif self.vae is not None: 
                 # we train on compressed latent representation of original images (LDAE)
@@ -290,88 +333,19 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             z0 = batch["x_origin"]
             z0 = rearrange(z0, "b t c h w -> (b t) c h w")
 
-        # For visualization (only for batch_idx == 0 on global_rank == 0)
-        if batch_idx == 0 and self.global_rank == 0:
-            print("Generating image...")
-            z_0 = None
-            if self.mode == "pretrain":
-                # Use the EMA version (or the main unet) for sampling
-                z_0 = self.gaussian_diffusion.regular_ddim_sample(
-                    ddim_style='ddim50',
-                    denoise_fn=self.ema_unet if hasattr(self, 'ema_unet') else self.unet,
-                    x_T=torch.randn_like(z0),
-                )
-            elif self.mode == "representation-learning":
-                # x0 = batch["image"]
-                x0 = batch["x_origin"]
-                x0 = rearrange(x0, "b t c h w -> (b t) c h w")
-                # Use the EMA version (or the main encoder/decoder) for sampling
-                z_0 = self.gaussian_diffusion.representation_learning_ddim_sample(
-                    ddim_style='ddim50',
-                    encoder=self.ema_encoder if hasattr(self, 'ema_encoder') else self.encoder,
-                    decoder=self.ema_decoder if hasattr(self, 'ema_decoder') else self.decoder,
-                    x_0=x0,
-                    x_T=torch.randn_like(z0),
-                    disable_tqdm=True
-                )
-
-                # Log the original for comparison
-                self.tb_log_image_batch_2d(
-                    self.decode(x0),
-                    caption="origin"
-                )
-
-            if z_0 is not None:
-                print("Logging image...")
-                if self.mode == "pretrain":
-                    print("skip log img for pretrain")
-                #     imgs = z_0[:3, ...]  # [(B T) C H W]
-                #     self.tb_display_generation(step=self.global_step, tag="generated", images=imgs)
-                    # self.log_image_batch(
-                    #     self.decode(z_0[0:min(4, z_0.shape[0])]).cpu().numpy(),
-                    #     caption="generated"
-                    # )
-                elif self.mode == "representation-learning":
-                    # self.log_image_batch(
-                    #     self.decode(z_0).cpu().numpy(),
-                    #     caption="generated"
-                    # )
-                    self.tb_log_image_batch_2d(
-                        self.decode(z_0),
-                        job = self.trainer.state.stage.value,
-                        caption="generate",
-                        idx=batch_idx
-                    )
-                else:
-                    raise ValueError(f"Invalid mode: {self.mode}")
-            else:
-                raise ValueError(f"Invalid mode: {self.mode}")
-
         if self.mode == "representation-learning":
-            # x0 = batch["image"]
-            x0 = batch["x_origin"]
-            x0 = rearrange(x0, "b t c h w -> (b t) c h w")
-            zt = self.gaussian_diffusion.representation_learning_ddim_sample(
-                ddim_style='ddim100',
-                encoder=self.ema_encoder if hasattr(self, 'ema_encoder') else self.encoder,
-                decoder=self.ema_decoder if hasattr(self, 'ema_decoder') else self.decoder,
-                x_0=x0,
-                x_T=torch.randn_like(z0),
-                disable_tqdm=True
+            cond = self.encoder(z0)
+            output = self.gaussian_diffusion.regular_train_one_batch(
+                denoise_fn=self.decoder, 
+                x_0=z0,
+                condition=cond
             )
-            recon = self.decode(zt)
-            ssim = self.ssim(recon, self.decode(z0))
-            loss = self.gaussian_diffusion.p_loss(recon, x0, loss_type="l2")
-            self.log_dict(
-                {"val_ssim": ssim.mean(),
-                 "val_loss": loss},
-                 prog_bar=True, 
-                 on_step=False,
-                 on_epoch=True,
-                 sync_dist=True
-            )
-            # self.log("val_ssim", ssim.mean(), prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-            return ssim
+        if output is None:
+            raise ValueError(f"Invalid mode: {self.mode}")
+
+        loss = output['prediction_loss']
+        self.log("val_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+        return loss
 
     def test_step(self, batch, batch_idx):
         """
@@ -387,18 +361,18 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             z0 = batch["latent"]
             z0 = z0 * self.scale_factor
         else:
-            z0 = x0.clone()
+            z0 = None
 
         if self.mode == "pretrain":
             z_T = self.gaussian_diffusion.regular_ddim_encode(
-                ddim_style='ddim100',
+                ddim_style=self.test_ddim_style,
                 denoise_fn=self.ema_unet,
                 x_0=z0,
                 disable_tqdm=True
             )
             # Use the EMA version (or the main unet) for sampling
             z_0 = self.gaussian_diffusion.regular_ddim_sample(
-                ddim_style='ddim100',
+                ddim_style=self.test_ddim_style,
                 denoise_fn=self.ema_unet,
                 x_T=torch.randn_like(z0),
             )
@@ -425,7 +399,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             self.reconstructed_features = torch.cat([self.reconstructed_features, recon_features], dim=0)
             # Now get reconstruction metrics with regular DDIM
             z_infer_ddim = self.gaussian_diffusion.regular_ddim_sample(
-                ddim_style='ddim100',
+                ddim_style=self.test_ddim_style,
                 denoise_fn=self.ema_unet,
                 x_T=z_T,
             )
@@ -442,46 +416,87 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             self.log("test_ddim_lpips", lpips.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
 
         elif self.mode == "representation-learning":
-            # Use the EMA version (or the main encoder/decoder) for sampling
-            print("Encoding the image...")
-            z_T = self.gaussian_diffusion.latent_representation_learning_ddim_encode(
-                ddim_style='ddim100',
-                encoder=self.ema_encoder,
-                decoder=self.ema_decoder,
-                x_0=x0,
-                z_0=z0,
-                disable_tqdm=True
-            )
-            print("Decoding with LDAE...")
-            z0_hat = self.gaussian_diffusion.representation_learning_ddim_sample(
-                ddim_style='ddim100',
-                encoder=self.ema_encoder,
-                decoder=self.ema_decoder,
-                x_0=x0,
-                x_T=z_T,
-                disable_tqdm=True
-            )
+            if self.vae is None: 
+                print(f"Encoding the image...[batch_idx: {batch_idx}]")
+                x_T_inferred = self.gaussian_diffusion.representation_learning_ddim_encode(
+                    ddim_style=self.test_ddim_style,
+                    encoder=self.ema_encoder,
+                    decoder=self.ema_decoder,
+                    x_0=x0
+                )
+                print(f"Decoding with LDAE...[batch_idx: {batch_idx}]")
+                x0_hat = self.gaussian_diffusion.representation_learning_ddim_sample(
+                    ddim_style=self.test_ddim_style,
+                    encoder=self.ema_encoder,
+                    decoder=self.ema_decoder,
+                    x_0=x0,
+                    x_T=x_T_inferred,
+                    disable_tqdm=True
+                )
 
-            print("Semantic sampling with LDAE...")
-            z0_semantic = self.gaussian_diffusion.representation_learning_ddim_sample(
-                ddim_style='ddim100',
-                encoder=self.ema_encoder,
-                decoder=self.ema_decoder,
-                x_0=x0,
-                x_T=torch.randn_like(z0),
-                disable_tqdm=True
-            )
+                print(f"Semantic sampling with LDAE...[batch_idx: {batch_idx}]")
+                x0_semantic = self.gaussian_diffusion.representation_learning_ddim_sample(
+                    ddim_style=self.test_ddim_style,
+                    encoder=self.ema_encoder,
+                    decoder=self.ema_decoder,
+                    x_0=x0,
+                    x_T=torch.randn_like(x0),
+                    disable_tqdm=True
+                )
+            elif self.vae is not None: 
 
-            x0_semantic = self.decode(z0_semantic)
-            x0_hat = self.decode(z0_hat)
-            x0_recon = self.decode(z0)
+                # Use the EMA version (or the main encoder/decoder) for sampling
+                print(f"Encoding the image...[batch_idx: {batch_idx}]")
+                z_T = self.gaussian_diffusion.latent_representation_learning_ddim_encode(
+                    ddim_style=self.test_ddim_style,
+                    encoder=self.ema_encoder,
+                    decoder=self.ema_decoder,
+                    x_0=x0,
+                    z_0=z0,
+                    disable_tqdm=True
+                )
+                print(f"Decoding with LDAE...[batch_idx: {batch_idx}]")
+                z0_hat = self.gaussian_diffusion.representation_learning_ddim_sample(
+                    ddim_style=self.test_ddim_style,
+                    encoder=self.ema_encoder,
+                    decoder=self.ema_decoder,
+                    x_0=x0,
+                    x_T=z_T,
+                    disable_tqdm=True
+                )
+
+                print(f"Semantic sampling with LDAE...[batch_idx: {batch_idx}]")
+                z0_semantic = self.gaussian_diffusion.representation_learning_ddim_sample(
+                    ddim_style=self.test_ddim_style,
+                    encoder=self.ema_encoder,
+                    decoder=self.ema_decoder,
+                    x_0=x0,
+                    x_T=torch.randn_like(z0),
+                    disable_tqdm=True
+                )
+                x0_semantic = self.decode(z0_semantic)
+                x0_hat = self.decode(z0_hat)
+                x_T_inferred = self.decode(z_T)
+                x0_recon = self.decode(z0)
+
             if self.spartial_dim == 3: 
                 x0_real = x0.permute(0, 1, 3, 4, 2)  # [B, C, H, W, D]
             elif self.spartial_dim == 2:
                 x0_real = x0
 
+            # Store the result
+            x0_real_np = x0_real.cpu().numpy()  # [B, C, H, W]
+            x0_hat_np = x0_hat.cpu().numpy()  # [B, C, H, W]
+            x0_semantic_np = x0_semantic.cpu().numpy()
+            self.recons_idx.append(batch["id"].cpu().numpy())
+            self.recons_np.append(x0_hat_np)
+            self.recons_semantic_np.append(x0_semantic_np)
+            self.origins.append(x0_real_np)
+
             # if batch_idx < 20:  # only use for WandB because we can store multiple images inside 1 tag
             if batch_idx % self.log_img_every_epoch == 0: 
+                pidx = batch["id"].item()
+                save_idx = batch_idx // self.log_img_every_epoch  # so that every test run will store img with the same save_idx (easier to browse)
                 if self.spartial_dim == 3: 
                     self.log_image_batch(x0_semantic.cpu().numpy(), caption="semantic")
                     self.log_image_batch(x0_hat.cpu().numpy(), caption="inferred")
@@ -489,11 +504,15 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                     self.log_image_batch(x0_real.cpu().numpy(), caption="real")
                 elif self.spartial_dim == 2: 
                     job = self.trainer.state.stage.value
-                    self.tb_log_image_batch_2d(x0_semantic, job=job, caption="recon_semantic", idx=batch_idx)
-                    self.tb_log_image_batch_2d(x0_hat, job=job, caption="recon_inferred", idx=batch_idx)
-                    self.tb_log_image_batch_2d(x0_real, job=job, caption="real", idx=batch_idx)
+                    self.tb_log_image_batch_2d(x_T_inferred, job=job, caption="xT_inferred", idx=pidx)
+                    self.tb_log_image_batch_2d(x0_semantic, job=job, caption="recon_semantic", idx=pidx)
+                    self.tb_log_image_batch_2d(x0_hat, job=job, caption="recon_inferred", idx=pidx)
+                    self.tb_log_image_batch_2d(x0_real, job=job, caption="real", idx=pidx)
                     if self.vae: 
-                        self.tb_log_image_batch_2d(x0_recon, job=job, caption="recon_aekl", idx=batch_idx)
+                        self.tb_log_image_batch_2d(x0_recon, job=job, caption="recon_vaekl", idx=pidx)
+                    
+                    # Log plot of comparison
+                    self.tb_log_plot_comparison_2d(idx=pidx, x_origin=x0_real_np, x_recons=x0_hat_np)
 
 
             # Compute reconstruction metrics starting from the semantic space
@@ -501,13 +520,13 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             ldae_ssim_semantic_original = self.ssim(x0_semantic, x0_real)
             ldae_mssim_semantic_original = self.mssim(x0_semantic, x0_real)
             ldae_lpips_semantic_original = self.lpips(x0_semantic, x0_real)
-            self.log("test_mse_ldae_semantic_original", ldae_mse_semantic_original.mean(), prog_bar=True, on_step=True,
+            self.log("test_mse/ldae_semantic_original", ldae_mse_semantic_original.mean(), prog_bar=True, on_step=True,
                      on_epoch=True, sync_dist=True)
-            self.log("test_ssim_ldae_semantic_original", ldae_ssim_semantic_original.mean(), prog_bar=True,
+            self.log("test_ssim/ldae_semantic_original", ldae_ssim_semantic_original.mean(), prog_bar=True,
                      on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_mssim_ldae_semantic_original", ldae_mssim_semantic_original.mean(), prog_bar=True,
+            self.log("test_mssim/ldae_semantic_original", ldae_mssim_semantic_original.mean(), prog_bar=True,
                      on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_lpips_ldae_semantic_original", ldae_lpips_semantic_original.mean(), prog_bar=True,
+            self.log("test_lpips/ldae_semantic_original", ldae_lpips_semantic_original.mean(), prog_bar=True,
                      on_step=True, on_epoch=True, sync_dist=True)
 
             # Compute reconstruction metrics starting from semantic + z_T inferred
@@ -515,13 +534,13 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             ldae_ssim_original = self.ssim(x0_hat, x0_real)
             ldea_mssim_original = self.mssim(x0_hat, x0_real)
             ldae_lpips_original = self.lpips(x0_hat, x0_real)
-            self.log("test_mse_ldae_original", ldae_mse_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
+            self.log("test_mse/ldae_original", ldae_mse_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
                      sync_dist=True)
-            self.log("test_ssim_ldae_original", ldae_ssim_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
+            self.log("test_ssim/ldae_original", ldae_ssim_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
                      sync_dist=True)
-            self.log("test_mssim_ldae_original", ldea_mssim_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
+            self.log("test_mssim/ldae_original", ldea_mssim_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
                      sync_dist=True)
-            self.log("test_lpips_ldae_original", ldae_lpips_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
+            self.log("test_lpips/ldae_original", ldae_lpips_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
                      sync_dist=True)
 
             # Compute reconstruction metrics of the autoencoder
@@ -536,6 +555,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                 self.log("test_lpips_aekl", aekl_lpips.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
+        
 
     def on_test_epoch_end(self):
         if self.mode == "pretrain":
@@ -545,6 +565,44 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             self.log("test_fid_original", fid_original, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
             self.log("test_fid_reconstructed", fid_reconstructed, prog_bar=True, on_step=False, on_epoch=True,
                      sync_dist=True)
+            
+        # Collect reconstruction result and save
+        def save_np(np_path, np_name, x):
+            """
+            Save numpy array in np_path with a given np_name
+            """
+            np.save(
+                os.path.join(np_path, np_name),
+                x
+            )
+
+        self.recons_np = np.stack(self.recons_np)  # [N, B, C, H, W]
+        self.recons_semantic_np = np.stack(self.recons_semantic_np)  # [N, B, C, H, W]
+        self.recons_idx = np.stack(self.recons_idx)
+        self.origins = np.stack(self.origins)  # [N, B, C, H, W])
+
+        save_np(self.result_path, "recons", self.recons_np)
+        save_np(self.result_path, "recons_semantic", self.recons_semantic_np)
+        save_np(self.result_path, "recons_idx", self.recons_idx)
+
+        print("Save reconstruction numpy.")
+        
+        # Plot histogram of L1 error pixel_wise
+        from src.utils import plot_error_histogram
+        l1_errors = np.abs(self.origins - self.recons_np)
+
+        # # log to TB histogram
+        # flat_errors = l1_errors.reshape(-1)  # flatten all dims to 1D
+        # self.logger.experiment.add_histogram(
+        #     "test/pixel_wise_l1_loss",
+        #     flat_errors,
+        #     global_step=self.global_step
+        # )
+
+        # log custome L1 histogram to Tensorboard
+        l1_errors = rearrange(l1_errors, "n b c h w -> b (n c h w)")  # B = 10 = number of timeframes. 
+        fig = plot_error_histogram(l1_errors)
+        self.logger.experiment.add_figure("test_figures/l1_histogram", fig, self.global_step)
             
     def tb_display_generation(self, step, images, tag="Generated"):
         """
@@ -589,13 +647,43 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
     
         grid = torchvision.utils.make_grid(images, nrow=slices_per_patient, normalize=True, scale_each=True)
         if job == "fit":
-            tag = f"{job}_ep{self.current_epoch:03d}_{caption}"
+            tag = f"{job}_ep{self.current_epoch:03d}/{caption}"
         elif job in ["validate", "test"]:
-            tag = f"{job}_{idx}_{caption}"
+            # tag = f"{job}_{idx}/{caption}"
+            tag = f"test_{idx:03}/{caption}"
         writer.add_image(tag, grid, self.global_step)
 
-    
+    def tb_log_plot_comparison_2d(self, idx, x_origin, x_recons):
+        """
+        Log plot of comparison to TensorBoard. 
+        Plot will have 3 rows and 1 column for color bar cmap. 
+            - Original images. list[np.ndarray]
+            - Reconstruction images (can be x_inferred or x_hat)
+            - Error
+        All images need to be in np.ndarray format [B, H, W]. B = 10 for StarmenDataset. 
+        """
+        writer = self.logger.experiment    
 
+        imgs = [
+            x_origin.squeeze(),
+            x_recons.squeeze(),
+            np.abs(x_origin - x_recons).squeeze(),
+        ]
+
+        labels = [
+            "Origin",
+            "Reconstruction",
+            "Error"
+        ]
+
+        is_errors = [False, False, True]
+        opts = {
+            "title": "Reconsuction error (inferred x)",
+            "base_size": 1.2
+            }
+
+        fig = plot_comparison_starmen(imgs, labels, is_errors, opt=opts)
+        writer.add_figure(f"test_{idx}/comparison", fig, self.global_step)
 
     # def log_image(self, recon, caption="generated"):
     #     """
@@ -688,10 +776,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
         elif self.mode == "representation-learning":
             return torch.optim.Adam([
                 {"params": self.encoder.parameters()},
-                {"params": self.decoder.label_emb.parameters()},
-                {"params": self.decoder.shift_middle_block.parameters()},
-                {"params": self.decoder.shift_output_blocks.parameters()},
-                {"params": self.decoder.shift_out.parameters()},
+                {"params": self.decoder.parameters()},
             ], lr=self.lr, eps=1.0e-08, betas=(0.9, 0.999), weight_decay=0.0)
         else:
             raise ValueError(f"Invalid mode: {self.mode}")

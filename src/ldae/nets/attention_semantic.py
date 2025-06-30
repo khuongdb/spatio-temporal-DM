@@ -78,3 +78,63 @@ class AttentionSemanticEncoder(nn.Module):
         # 7. Squeeze the second dimension
         x = x.squeeze(1)
         return x
+
+
+
+
+
+
+
+class SemanticEncoder(nn.Module):
+    """
+    Basic Backbone network for SemanticEncoder.
+    Available backbones (some of them): 
+    Resnet: 
+        resnet18,
+        resnet34,
+        resnet50, 
+        resnet101
+    convnext_small
+
+    Default model weight is normally stored in in a submodule with the model name
+    for example: "torchvision.models.ResNet50_Weights.<__module__>"
+    e.g: for ResNet50 we have: 
+    {'IMAGENET1K_V1': ResNet50_Weights.IMAGENET1K_V1, 
+    'IMAGENET1K_V2': ResNet50_Weights.IMAGENET1K_V2, 
+    'DEFAULT': ResNet50_Weights.IMAGENET1K_V2}
+
+    Args:
+        backbone_args (dict): The arguments to pass to the BackboneBaseModule.
+        emb_chans (int): The dimension of the final embedding.
+    Inputs:
+        x (torch.Tensor): The input of the module with shape `(batch_size, D, 1, H, W)`.
+    Outputs:
+        y_sem (torch.Tensor): The output of the module with shape `(batch_size, 768)`.
+    """
+
+    def __init__(self,
+                 backbone_args,
+                 emb_chans=768):
+        super().__init__()
+        self.embedding_dim = emb_chans
+        # Set the model parameters
+        self.backbone = BackboneBaseModule(**backbone_args)
+
+    def forward(self, x):
+        return self.backbone(x)
+
+
+
+# def main():
+#     backbone_args = {
+#         "net_class_path": "torchvision.models.resnet50",
+#         "weights": "torchvision.models.ResNet50_Weights.DEFAULT",
+#         "freeze_perc": 0.5,
+#         "grayscale": True,
+#         "emb_dim": 512,
+#     }
+#     model = SemanticEncoder(backbone_args)
+
+#     print("load model")
+
+# main()

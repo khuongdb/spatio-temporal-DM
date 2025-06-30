@@ -168,6 +168,11 @@ class DDIM:
         """
         shape = x_t.shape
         predicted_noise = denoise_fn(x_t, self.t_transform(t), condition)
+
+        if isinstance(predicted_noise, tuple):
+            pred, *_ = predicted_noise
+            predicted_noise = pred
+            
         predicted_x_0 = self.extract_coef_at_t(self.sqrt_recip_alphas_cumprod, t, shape) * x_t - \
                         self.extract_coef_at_t(self.sqrt_recip_alphas_cumprod_m1, t, shape) * predicted_noise
         predicted_x_0 = predicted_x_0.clamp(-1, 1)

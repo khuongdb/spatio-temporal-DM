@@ -325,6 +325,26 @@ class ResBlock(TimestepBlock):
 
 
 class ResBlockShift(TimestepContextBlock):
+
+    """
+    Residual block (ResBlock) with optional upsampling/downsampling and FiLM-style conditioning (scal-shift norm)
+
+    Args:
+        channels (int): Number of input channels to the block.
+        emb_channels (int): Number of channels in the time/conditioning embedding.
+        dropout (float): Dropout rate used in the residual block.
+        out_channels (int, optional): Number of output channels. Defaults to `channels` if not specified.
+        use_conv (bool): Whether to use a convolution in the skip connection instead of identity or 1x1 conv.
+        dims (int): Number of spatial dimensions (e.g., 2 for 2D convolutions).
+        up (bool): If True, the block performs upsampling.
+        down (bool): If True, the block performs downsampling.
+        use_scale_shift_norm (bool): 
+            If True, use FiLM-style conditioning where the embedding controls 
+            both scale and shift in normalization (h = norm(h) * scale + shift). 
+            If False, the embedding is simply added to the hidden state (h = h + emb).
+
+    """
+
     def __init__(
             self,
             channels,
@@ -335,6 +355,7 @@ class ResBlockShift(TimestepContextBlock):
             dims=2,
             up=False,
             down=False,
+            use_scale_shift_norm=True  
     ):
         super().__init__()
         self.channels = channels
@@ -342,6 +363,7 @@ class ResBlockShift(TimestepContextBlock):
         self.dropout = dropout
         self.out_channels = out_channels or channels
         self.use_conv = use_conv
+        self.use_scale_shift_norm = use_scale_shift_norm
 
         self.in_layers = nn.Sequential(
             normalization(channels),
@@ -362,11 +384,15 @@ class ResBlockShift(TimestepContextBlock):
 
         self.emb_layers = nn.Sequential(
             nn.SiLU(),
-            linear(emb_channels, 2 * self.out_channels),
+            linear(
+                emb_channels, 
+                2 * self.out_channels if self.use_scale_shift_norm else out_channels),
         )
         self.emb_z_layers = nn.Sequential(
             nn.SiLU(),
-            linear(emb_channels, 2 * self.out_channels),
+            linear(
+                emb_channels, 
+                2 * self.out_channels if self.use_scale_shift_norm else out_channels),
         )
         self.out_layers = nn.Sequential(
             normalization(self.out_channels),
@@ -403,11 +429,15 @@ class ResBlockShift(TimestepContextBlock):
             emb_z_out = emb_z_out[..., None]
 
         # Adaptive Group Normalization
-        out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
-        scale, shift = torch.chunk(emb_out, 2, dim=1)
-        z_scale, z_shift = torch.chunk(emb_z_out, 2, dim=1)
-        h = (1. + z_scale) * (out_norm(h) * (1. + scale) + shift) + z_shift
-        h = out_rest(h)
+        if self.use_scale_shift_norm:
+            out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+            scale, shift = torch.chunk(emb_out, 2, dim=1)
+            z_scale, z_shift = torch.chunk(emb_z_out, 2, dim=1)
+            h = (1. + z_scale) * (out_norm(h) * (1. + scale) + shift) + z_shift
+            h = out_rest(h)
+        else:
+            h = h + emb_out + emb_z_out
+            h = self.out_layers(h)
 
         return self.skip_connection(x) + h
 

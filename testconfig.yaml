@@ -9,8 +9,8 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: workdir/diffar_starmen
-      name: representation-learning
+      save_dir: workdir/diffae_starmen
+      name: condition_diffae
       version: null
       log_graph: false
       default_hp_metric: true
@@ -35,7 +35,7 @@ trainer:
   overfit_batches: 0.0
   val_check_interval: null
   check_val_every_n_epoch: 10
-  num_sanity_val_steps: 0
+  num_sanity_val_steps: 1
   log_every_n_steps: null
   enable_checkpointing: null
   enable_progress_bar: null
@@ -56,13 +56,13 @@ trainer:
   default_root_dir: null
   model_registry: null
 model:
-  class_path: src.ldae.LatentDiffusionAutoencoders2D
+  class_path: src.ldae.CondDDPM
   init_args:
     spartial_dim: 2
     enc_args:
       backbone_args:
-        net_class_path: torchvision.models.convnext_small
-        weights: torchvision.models.ConvNeXt_Small_Weights.DEFAULT
+        net_class_path: torchvision.models.resnet50
+        weights: torchvision.models.ResNet50_Weights.DEFAULT
         freeze_perc: 0.0
         grayscale: true
       emb_chans: 512
@@ -83,6 +83,7 @@ model:
       use_new_attention_order: false
       dropout: 0.0
       dims: 2
+      use_scale_shift_norm: true
     vae_args: null
     vae_path: null
     timesteps_args:
@@ -90,10 +91,11 @@ model:
       betas_type: linear
     lr: 2.5e-05
     mode: representation-learning
-    pretrained_path: workdir/diffar_starmen/pretrain/checkpoints/best.ckpt
+    pretrained_path: null
     ema_decay: 0.999
     ema_update_after_step: 10
     log_img_every_epoch: 10
+    test_ddim_style: ddim100
 data:
   data_dir: data/starmen/output_random_noacc
   train_ds:
@@ -108,21 +110,14 @@ data:
     nb_subject: null
     save_data: false
     workdir: workdir
-  test_ds:
-    data_dir: data/starmen/output_random_noacc
-    split: test
-    nb_subject: null
-    save_data: false
-    workdir: workdir
+  test_ds: null
   batch_size:
     train: 2
     val: 2
-    test: 1
   num_workers: 5
   shuffle:
     train: true
     val: false
-    test: false
 early_stopping:
   monitor: train_loss
   min_delta: 0.0
@@ -136,9 +131,9 @@ early_stopping:
   check_on_train_epoch_end: null
   log_rank_zero_only: false
 model_checkpoint:
-  dirpath: workdir/diffar_starmen/representation-learning/checkpoints/
+  dirpath: workdir/diffae_starmen/condition_diffae/checkpoints/
   filename: best
-  monitor: train_loss
+  monitor: val_loss
   verbose: false
   save_last: true
   save_top_k: 1
