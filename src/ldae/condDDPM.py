@@ -29,7 +29,8 @@ from src.ldae.nets import AttentionSemanticEncoder, SemanticEncoder
 from src.ldae.nets import UNet, ShiftUNet, CondUNet
 from src.ldae.diffusion import GaussianDiffusion
 from generative.networks.nets import AutoencoderKL
-from generative.metrics import SSIMMetric, MultiScaleSSIMMetric, FIDMetric
+from generative.metrics import FIDMetric
+from monai.metrics.regression import SSIMMetric, MultiScaleSSIMMetric, PSNRMetric
 from generative.losses import PerceptualLoss
 from einops import rearrange
 import numpy as np
@@ -84,9 +85,9 @@ class CondDDPM(L.LightningModule):
         self.test_ddim_style = test_ddim_style
 
         # Set the metrics
-        self.ssim = SSIMMetric(spatial_dims=self.spartial_dim, data_range=1.0, kernel_size=4)
+        self.ssim = SSIMMetric(spatial_dims=self.spartial_dim, data_range=1.0, win_size=4)
         self.mssim = MultiScaleSSIMMetric(spatial_dims=self.spartial_dim, data_range=1.0, kernel_size=4)
-
+        self.psnr = PSNRMetric(max_val=1.0, reduction="mean")
         # Diffusion helper
         self.gaussian_diffusion = GaussianDiffusion(
             timesteps_args, device=self.device
@@ -364,85 +365,38 @@ class CondDDPM(L.LightningModule):
             z0 = None
 
         if self.mode == "pretrain":
-            z_T = self.gaussian_diffusion.regular_ddim_encode(
-                ddim_style=self.test_ddim_style,
-                denoise_fn=self.ema_unet,
-                x_0=z0,
-                disable_tqdm=True
-            )
-            # Use the EMA version (or the main unet) for sampling
-            z_0 = self.gaussian_diffusion.regular_ddim_sample(
-                ddim_style=self.test_ddim_style,
-                denoise_fn=self.ema_unet,
-                x_T=torch.randn_like(z0),
-            )
-            x0_gen = self.decode(z_0)
-            x0_recon = self.decode(z0)
-            x0_real = x0.permute(0, 1, 3, 4, 2)
-            # Log 10 images in total
-            if batch_idx < 10:
-                self.log_image_batch(x0_gen.cpu().numpy(), caption="generated")
-                self.log_image_batch(x0_recon.cpu().numpy(), caption="reconstructed")
-                self.log_image_batch(x0_real.cpu().numpy(), caption="real")
-            # Compute the features with pretrained model
-            gen_features = self.fid_model(x0_gen)
-            gen_features = torch.nn.functional.adaptive_avg_pool3d(gen_features, 1).squeeze(-1).squeeze(-1).squeeze(-1)
-            real_features = self.fid_model(x0_real)
-            real_features = torch.nn.functional.adaptive_avg_pool3d(real_features, 1).squeeze(-1).squeeze(-1).squeeze(
-                -1)
-            recon_features = self.fid_model(x0_recon)
-            recon_features = torch.nn.functional.adaptive_avg_pool3d(recon_features, 1).squeeze(-1).squeeze(-1).squeeze(
-                -1)
-            # Append the features to the lists
-            self.real_features = torch.cat([self.real_features, real_features], dim=0)
-            self.generated_features = torch.cat([self.generated_features, gen_features], dim=0)
-            self.reconstructed_features = torch.cat([self.reconstructed_features, recon_features], dim=0)
-            # Now get reconstruction metrics with regular DDIM
-            z_infer_ddim = self.gaussian_diffusion.regular_ddim_sample(
-                ddim_style=self.test_ddim_style,
-                denoise_fn=self.ema_unet,
-                x_T=z_T,
-            )
-            x_infer_ddim = self.decode(z_infer_ddim)
-            mse = torch.nn.functional.mse_loss(x_infer_ddim, x0_real)
-            ssim = self.ssim(x_infer_ddim, x0_real)
-            mssim = self.mssim(x_infer_ddim, x0_real)
-            lpips = self.lpips(x_infer_ddim, x0_real)
-            if batch_idx < 10:
-                self.log_image_batch(x_infer_ddim.cpu().numpy(), caption="inferred_ddim")
-            self.log("test_ddim_mse", mse.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_ddim_ssim", ssim.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_ddim_mssim", mssim.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_ddim_lpips", lpips.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+            pass
 
         elif self.mode == "representation-learning":
             if self.vae is None: 
                 print(f"Encoding the image...[batch_idx: {batch_idx}]")
-                x_T_inferred = self.gaussian_diffusion.representation_learning_ddim_encode(
+                x_T_inferred = self.gaussian_diffusion.representation_learning_diffae_encode(
                     ddim_style=self.test_ddim_style,
                     encoder=self.ema_encoder,
-                    decoder=self.ema_decoder,
-                    x_0=x0
+                    unet=self.ema_decoder,
+                    x_0=x0,
+                    disable_tqdm=True
                 )
-                print(f"Decoding with LDAE...[batch_idx: {batch_idx}]")
-                x0_hat = self.gaussian_diffusion.representation_learning_ddim_sample(
+                print(f"Decoding from stochastic subcode...[batch_idx: {batch_idx}]")
+                x0_hat = self.gaussian_diffusion.representation_learning_diffae_sample(
                     ddim_style=self.test_ddim_style,
                     encoder=self.ema_encoder,
-                    decoder=self.ema_decoder,
+                    unet=self.ema_decoder,
                     x_0=x0,
                     x_T=x_T_inferred,
                     disable_tqdm=True
                 )
 
                 print(f"Semantic sampling with LDAE...[batch_idx: {batch_idx}]")
-                x0_semantic = self.gaussian_diffusion.representation_learning_ddim_sample(
+                x0_semantic = self.gaussian_diffusion.representation_learning_diffae_sample(
                     ddim_style=self.test_ddim_style,
                     encoder=self.ema_encoder,
-                    decoder=self.ema_decoder,
+                    unet=self.ema_decoder,
                     x_0=x0,
                     x_T=torch.randn_like(x0),
                     disable_tqdm=True
                 )
+
             elif self.vae is not None: 
 
                 # Use the EMA version (or the main encoder/decoder) for sampling
@@ -504,15 +458,29 @@ class CondDDPM(L.LightningModule):
                     self.log_image_batch(x0_real.cpu().numpy(), caption="real")
                 elif self.spartial_dim == 2: 
                     job = self.trainer.state.stage.value
-                    self.tb_log_image_batch_2d(x_T_inferred, job=job, caption="xT_inferred", idx=pidx)
-                    self.tb_log_image_batch_2d(x0_semantic, job=job, caption="recon_semantic", idx=pidx)
-                    self.tb_log_image_batch_2d(x0_hat, job=job, caption="recon_inferred", idx=pidx)
-                    self.tb_log_image_batch_2d(x0_real, job=job, caption="real", idx=pidx)
+                    self.tb_log_image_batch_2d(x_T_inferred, job=job, caption="xT_inferred", idx=save_idx)
+                    self.tb_log_image_batch_2d(x0_semantic, job=job, caption="recon_semantic", idx=save_idx)
+                    self.tb_log_image_batch_2d(x0_hat, job=job, caption="recon_inferred", idx=save_idx)
+                    self.tb_log_image_batch_2d(x0_real, job=job, caption="real", idx=save_idx)
                     if self.vae: 
-                        self.tb_log_image_batch_2d(x0_recon, job=job, caption="recon_vaekl", idx=pidx)
+                        self.tb_log_image_batch_2d(x0_recon, job=job, caption="recon_vaekl", idx=save_idx)
                     
                     # Log plot of comparison
-                    self.tb_log_plot_comparison_2d(idx=pidx, x_origin=x0_real_np, x_recons=x0_hat_np)
+                    self.tb_log_plot_comparison_2d(idx=save_idx, x_origin=x0_real_np, x_recons=x0_hat_np)
+
+                # Plot kde pixel intensity
+                from src.utils.visualization import plot_kde_pixel
+                fig = plot_kde_pixel(
+                    imgs=[x0_real, x0_hat, x0_semantic],
+                    labels=["x0", "x_recons (xT_infer)", "x_recons (semantic)"]
+                )
+
+                # Problem with tensorboard render figure (does not include legend). 
+                # convert to img to log with add_image
+                w, h = fig.canvas.get_width_height()
+                img = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape(h, w, 3)
+                self.logger.experiment.add_image(f"test_{save_idx:03}/kde_intensity", img, self.global_step, dataformats='HWC')
+                # self.logger.experiment.add_figure(f"test_{save_idx:03}/kde_intensity", fig, self.global_step)
 
 
             # Compute reconstruction metrics starting from the semantic space
@@ -590,19 +558,10 @@ class CondDDPM(L.LightningModule):
         # Plot histogram of L1 error pixel_wise
         from src.utils import plot_error_histogram
         l1_errors = np.abs(self.origins - self.recons_np)
-
-        # # log to TB histogram
-        # flat_errors = l1_errors.reshape(-1)  # flatten all dims to 1D
-        # self.logger.experiment.add_histogram(
-        #     "test/pixel_wise_l1_loss",
-        #     flat_errors,
-        #     global_step=self.global_step
-        # )
-
-        # log custome L1 histogram to Tensorboard
         l1_errors = rearrange(l1_errors, "n b c h w -> b (n c h w)")  # B = 10 = number of timeframes. 
         fig = plot_error_histogram(l1_errors)
         self.logger.experiment.add_figure("test_figures/l1_histogram", fig, self.global_step)
+
             
     def tb_display_generation(self, step, images, tag="Generated"):
         """
@@ -683,7 +642,7 @@ class CondDDPM(L.LightningModule):
             }
 
         fig = plot_comparison_starmen(imgs, labels, is_errors, opt=opts)
-        writer.add_figure(f"test_{idx}/comparison", fig, self.global_step)
+        writer.add_figure(f"test_{idx:03}/comparison", fig, self.global_step)
 
     # def log_image(self, recon, caption="generated"):
     #     """

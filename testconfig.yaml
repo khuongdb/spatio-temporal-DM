@@ -3,14 +3,15 @@ seed_everything: 42
 trainer:
   accelerator: auto
   strategy: auto
-  devices: auto
+  devices:
+  - 0
   num_nodes: 1
   precision: 16-mixed
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: workdir/diffae_starmen
-      name: condition_diffae
+      save_dir: workdir/diffae_starmen/infer
+      name: test_ddim1
       version: null
       log_graph: false
       default_hp_metric: true
@@ -30,12 +31,12 @@ trainer:
   max_time: null
   limit_train_batches: null
   limit_val_batches: null
-  limit_test_batches: null
+  limit_test_batches: 1
   limit_predict_batches: null
   overfit_batches: 0.0
   val_check_interval: null
-  check_val_every_n_epoch: 10
-  num_sanity_val_steps: 1
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0
   log_every_n_steps: null
   enable_checkpointing: null
   enable_progress_bar: null
@@ -62,11 +63,10 @@ model:
     enc_args:
       backbone_args:
         net_class_path: torchvision.models.resnet50
-        weights: torchvision.models.ResNet50_Weights.DEFAULT
+        weights: null
         freeze_perc: 0.0
         grayscale: true
       emb_chans: 512
-      seq_len: 128
     unet_args:
       input_channel: 1
       base_channel: 32
@@ -91,38 +91,31 @@ model:
       betas_type: linear
     lr: 2.5e-05
     mode: representation-learning
-    pretrained_path: null
+    pretrained_path: workdir/diffae_starmen/pretrain/checkpoints/best.ckpt
     ema_decay: 0.999
     ema_update_after_step: 10
-    log_img_every_epoch: 10
-    test_ddim_style: ddim100
+    log_img_every_epoch: 15
+    test_ddim_style: ddim1
 data:
   data_dir: data/starmen/output_random_noacc
-  train_ds:
+  train_ds: null
+  val_ds: null
+  test_ds:
     data_dir: data/starmen/output_random_noacc
-    split: train
+    split: test
     nb_subject: null
     save_data: false
     workdir: workdir
-  val_ds:
-    data_dir: data/starmen/output_random_noacc
-    split: val
-    nb_subject: null
-    save_data: false
-    workdir: workdir
-  test_ds: null
   batch_size:
-    train: 2
-    val: 2
+    test: 1
   num_workers: 5
   shuffle:
-    train: true
-    val: false
+    test: false
 early_stopping:
-  monitor: train_loss
+  monitor: test_ssim_ldae_original
   min_delta: 0.0
-  patience: 100
-  verbose: true
+  patience: 3
+  verbose: false
   mode: min
   strict: true
   check_finite: true
@@ -131,15 +124,15 @@ early_stopping:
   check_on_train_epoch_end: null
   log_rank_zero_only: false
 model_checkpoint:
-  dirpath: workdir/diffae_starmen/condition_diffae/checkpoints/
-  filename: best
-  monitor: val_loss
+  dirpath: null
+  filename: null
+  monitor: null
   verbose: false
-  save_last: true
+  save_last: null
   save_top_k: 1
   save_weights_only: false
   mode: min
-  auto_insert_metric_name: false
+  auto_insert_metric_name: true
   every_n_train_steps: null
   train_time_interval: null
   every_n_epochs: null
@@ -147,4 +140,5 @@ model_checkpoint:
   enable_version_counter: true
 optimizer: null
 lr_scheduler: null
-ckpt_path: null
+ckpt_path: workdir/diffae_starmen/representation-learning/checkpoints/best.ckpt
+verbose: true

@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import os
+import torch
 
 
 def pad_to_square(arr):
@@ -109,11 +110,22 @@ def plot_comparison_starmen(imgs, labels, is_errors=None, save=False, save_path=
     diff_mappable = None
 
     # Adjust figure size and create a GridSpec with an extra column for the colorbar
-    w = 2.5 * (ncols + 0.15)
-    h = 2.5 * nrows
+    base_size = opt.get("base_size", 2.5)
+    w = base_size * (ncols + 0.15)
+    h = base_size * nrows
     fig = plt.figure(figsize=(w, h))  # Increased width for the colorbar
     gs = GridSpec(nrows, ncols + 1, figure=fig, wspace=0.05, hspace=0.05, 
                 width_ratios=[1]*num_slices + [0.15])
+    
+    # Colormap vmin and vmax
+    cbar_vmin = opt.get("cbar_vmin", None)
+    cbar_vmax = opt.get("cbar_vmax", None)
+
+    imshow_kwargs = {}
+    if cbar_vmin is not None:
+        imshow_kwargs['vmin'] = cbar_vmin
+    if cbar_vmax is not None:
+        imshow_kwargs['vmax'] = cbar_vmax
 
     for i in range(num_slices):
         col_idx = i
@@ -124,9 +136,9 @@ def plot_comparison_starmen(imgs, labels, is_errors=None, save=False, save_path=
             img = row_imgs[i]
             cmap = "jet" if is_errors[row_idx] else "gray"
 
-            im = ax.imshow(img, cmap=cmap)
+            im = ax.imshow(img, cmap=cmap, **imshow_kwargs)
 
-        # Store the mappable for the error row
+            # Store the mappable for the error row
             if is_errors[row_idx]:
                 diff_mappable = im
 
@@ -135,33 +147,33 @@ def plot_comparison_starmen(imgs, labels, is_errors=None, save=False, save_path=
 
         # Add row titles on the left side
             if col_idx == 0 and i == 0:
-                ax.text(-0.15, 0.5, row_label, fontsize=12, va='center', ha='center', 
+                ax.text(-0.15, 0.5, row_label, fontsize=12*base_size/2.5, va='center', ha='center', 
                     transform=ax.transAxes, rotation=90)
 
 
     # Add a full-height colorbar as a "4th plot"
     if diff_mappable is not None:
+
         ax = fig.add_subplot(gs[:, -1])
         ax.axis('off')
         cbar_ax = fig.add_subplot(gs[:, -1])  # Span all rows in the last column
         cbar = fig.colorbar(diff_mappable, cax=cbar_ax, aspect=10)
-        cbar.set_label('Absolute Error', fontsize=12, labelpad=10)
+        cbar.set_label('Absolute Error', fontsize=12*base_size/2.5, labelpad=10)
     
     title = opt.get("title", None)
     if title: 
-        plt.suptitle(title, fontsize=16, y=0.92)
+        plt.suptitle(title, fontsize=16*base_size/2.5, y=0.92)
 
     # plt.tight_layout()
+
     if show:
         plt.show()
     if save and save_path is not None:
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
+    return fig
 
-
-
-
-def plot_error_histogram(diff_t, anomaly_diff_t=None, save=False, save_path=None, show=False, opt=None):
+def plot_error_histogram(diff_t, anomaly_diff_t=None, save=False, save_path=None, show=False, y_scale=False, opt=None):
     """
     Plot the error histogram for each time point (10 timepoints for starmen dataset)
     diff_t: np.ndarray [T, (B H W)]: pixel-wise error for each timepoint. 
@@ -183,7 +195,8 @@ def plot_error_histogram(diff_t, anomaly_diff_t=None, save=False, save_path=None
         if anomaly_diff_t is not None: 
             axes[i].hist(anomaly_diff_t[i], bins=bins, color='red', edgecolor='black', alpha=0.7, label="anomaly_region" if i == 0 else None)
         axes[i].set_title(f't = {i}')
-        axes[i].set_yscale("log")
+        if y_scale: 
+            axes[i].set_yscale("log")
 
         # Compute percentiles
         cmap = plt.get_cmap("inferno")
@@ -224,3 +237,71 @@ def plot_error_histogram(diff_t, anomaly_diff_t=None, save=False, save_path=None
     if save and save_path is not None:
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
+    return fig
+
+
+def plot_kde_pixel(imgs, labels, max_plot=5, remove_zeros=False, show=False, save=False, save_path=None, plot_type="kde", **plot_args):
+    """
+    Plot histogram of pixel intensity for a list of images 
+    """
+    import seaborn as sns  
+
+    for i in range(len(imgs)): 
+        if isinstance(imgs[i], torch.Tensor):
+            imgs[i] = imgs[i].detach().cpu().numpy()
+
+            # remove NaN value
+            valid_img = imgs[i][~np.isnan(imgs[i])]
+            imgs[i] = valid_img
+
+    B = len(imgs[0])
+    if B > max_plot:
+        B = max_plot
+
+    fig, axes = plt.subplots(1, B, figsize=(10, 2.5), sharey=True)  
+
+    for i in range(B):
+        # img = imgs_a[i].squeeze()
+        # img_b = imgs_b[i].squeeze()
+
+        ax = axes[i]
+        for id, img in enumerate(imgs):
+            im = img[i]
+            if isinstance(im, np.ndarray):
+                im = im.squeeze().flatten()
+            if remove_zeros:
+                im = im[im != 0.]
+            if im.size == 0:
+                print(f"Warning: Data for label {labels[id]} is empty after zero removal, skipping plot.")
+            else:
+                if plot_type == "kde":
+                    sns.kdeplot(im, bw_adjust=0.5, linewidth=1.0, ax=ax, label=labels[id], **plot_args)
+                elif plot_type == "hist": 
+                    sns.histplot(im, bins=50, ax=ax, label=labels[id], stat="count", **plot_args)
+
+        # ax.hist(pixels, bins=30, range=(0, 1), histtype='step', color='blue')
+
+        # # KLD annotation
+        # ax.text(0.01, 0.95, f"KLD= {klds[idx]:.3f}", ha='left', va='top', transform=ax.transAxes, fontsize=9)
+
+        ax.set_title(f"Img {i}", fontsize=8)
+        # ax.set_xticks([]) 
+        # ax.set_yticks([]) 
+        # ax.spines['top'].set_visible(False)
+        # ax.spines['right'].set_visible(False)
+        ax.set_ylabel("")
+
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0), ncol=len(imgs))
+
+    plt.tight_layout(rect=[0, 0.005, 1, 1])
+
+    if show: 
+        plt.show()
+    if save and save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close(fig)
+
+    fig.canvas.draw()
+    return fig

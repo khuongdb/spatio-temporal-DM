@@ -58,6 +58,7 @@ class DDIM:
 
         to_torch = partial(torch.tensor, dtype=torch.float32, device=self.device)
 
+        self.alphas_cumprod = to_torch(alphas_cumprod)
         self.alphas_cumprod_prev = to_torch(alphas_cumprod_prev)
         self.alphas_cumprod_next = to_torch(alphas_cumprod_next)
 
@@ -126,7 +127,7 @@ class DDIM:
 
         return predicted_x_0 * torch.sqrt(alpha_bar_prev) + torch.sqrt(1. - alpha_bar_prev) * new_predicted_noise
 
-    def ddim_sample_loop(self, denoise_fn, x_T, condition=None):
+    def ddim_sample_loop(self, denoise_fn, x_T, condition=None, disable_tqdm=False):
         """
         Perform complete DDIM sampling from pure noise to a clean sample.
         
@@ -144,7 +145,7 @@ class DDIM:
         shape = x_T.shape
         batch_size = shape[0]
         img = x_T
-        for i in tqdm(reversed(range(0 + 1, self.timesteps + 1)), desc='sampling loop time step', total=self.timesteps):
+        for i in tqdm(reversed(range(0 + 1, self.timesteps + 1)), desc='sampling loop time step', total=self.timesteps, disable=disable_tqdm):
             t = torch.full((batch_size,), i, device=self.device, dtype=torch.long)
             img = self.ddim_sample(denoise_fn, img, t, condition)
         return img

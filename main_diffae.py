@@ -44,7 +44,7 @@ class MyCLI(LightningCLI):
         if stage == "test":
             ddim_style = stage_conf["model"]["init_args"]["test_ddim_style"]
             split = stage_conf["data"]["test_ds"]["split"]
-            stage_conf["trainer"]["logger"]["init_args"]["name"] = f"test_{split}_{ddim_style}"
+            stage_conf["trainer"]["logger"]["init_args"]["name"] = f"{split}_{ddim_style}"
 
 
     def add_arguments_to_parser(self, parser):

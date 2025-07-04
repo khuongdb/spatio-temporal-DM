@@ -75,6 +75,96 @@ def lerp(a, b, alpha):
     """
     return (1.0 - alpha) * a + alpha * b
 
+
+def normalize_to_neg_one_to_one(img):
+    return img * 2 - 1
+
+def unnormalize_to_zero_to_one(t):
+    return (t + 1) * 0.5
+
+
+def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
+    """
+    Get a pre-defined beta schedule for the given name.
+
+    The beta schedule library consists of beta schedules which remain similar
+    in the limit of num_diffusion_timesteps.
+    Beta schedules may be added, but should not be removed or changed once
+    they are committed to maintain backwards compatibility.
+    """
+    if schedule_name == "linear":
+        # Linear schedule from Ho et al, extended to work for any number of
+        # diffusion steps.
+        scale = 1000 / num_diffusion_timesteps
+        beta_start = scale * 0.0001
+        beta_end = scale * 0.02
+        return np.linspace(beta_start,
+                           beta_end,
+                           num_diffusion_timesteps,
+                           dtype=np.float64)
+    elif schedule_name == "cosine":
+        return betas_for_alpha_bar(
+            num_diffusion_timesteps,
+            lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2)**2,
+        )
+    elif schedule_name == "const0.01":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.01] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.015":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.015] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.008":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.008] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.0065":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.0065] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.0055":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.0055] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.0045":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.0045] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.0035":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.0035] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.0025":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.0025] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    elif schedule_name == "const0.0015":
+        scale = 1000 / num_diffusion_timesteps
+        return np.array([scale * 0.0015] * num_diffusion_timesteps,
+                        dtype=np.float64)
+    else:
+        raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
+    
+def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
+    """
+    Create a beta schedule that discretizes the given alpha_t_bar function,
+    which defines the cumulative product of (1-beta) over time from t = [0,1].
+
+    :param num_diffusion_timesteps: the number of betas to produce.
+    :param alpha_bar: a lambda that takes an argument t from 0 to 1 and
+                      produces the cumulative product of (1-beta) up to that
+                      part of the diffusion process.
+    :param max_beta: the maximum beta to use; use values lower than 1 to
+                     prevent singularities.
+    """
+    betas = []
+    for i in range(num_diffusion_timesteps):
+        t1 = i / num_diffusion_timesteps
+        t2 = (i + 1) / num_diffusion_timesteps
+        betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+    return np.array(betas)
+
 class GaussianDiffusion:
     """
     GaussianDiffusion is the main class implementing the diffusion process for Latent Diffusion Autoencoders (LDAE), Pretrained Diffusion Autoencoder (PDAE) e Diffusion Autoencoders (DAE).
@@ -105,19 +195,20 @@ class GaussianDiffusion:
         self.device = device
         self.timesteps = config["timesteps"]
         betas_type = config["betas_type"]
-        if betas_type == "linear":
-            betas = np.linspace(0.0001, 0.02, self.timesteps)
-        elif betas_type == "cosine":
-            betas = []
-            alpha_bar = lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2
-            max_beta = 0.999
-            for i in range(self.timesteps):
-                t1 = i / self.timesteps
-                t2 = (i + 1) / self.timesteps
-                betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
-            betas = np.array(betas)
-        else:
-            raise NotImplementedError
+        betas = get_named_beta_schedule(betas_type, self.timesteps)
+        # if betas_type == "linear":
+        #     betas = np.linspace(0.0001, 0.02, self.timesteps)
+        # elif betas_type == "cosine":
+        #     betas = []
+        #     alpha_bar = lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2
+        #     max_beta = 0.999
+        #     for i in range(self.timesteps):
+        #         t1 = i / self.timesteps
+        #         t2 = (i + 1) / self.timesteps
+        #         betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+        #     betas = np.array(betas)
+        # else:
+        #     raise NotImplementedError
 
         alphas = 1. - betas
         alphas_cumprod = np.cumprod(alphas, axis=0)
@@ -148,13 +239,20 @@ class GaussianDiffusion:
         posterior_log_variance_clipped = np.log(np.append(posterior_variance[1], posterior_variance[1:]))
         self.posterior_log_variance_clipped = to_torch(posterior_log_variance_clipped)
 
+        # coef for posterior distribution of q(x_{t-1} | x_t, x_0)
+        # q(x_{t-1} | x_t, x_0) = N(\mu_t(x_t, x_0), \sigma_t)
+        # posterior mean: \mu_t = coef1 x0 + coef2 x_t
+        # E.q (6) and (7) in DDPM arXiv:2006.11239v2 
         self.x_0_posterior_mean_x_0_coef = to_torch(betas * np.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
         self.x_0_posterior_mean_x_t_coef = to_torch(
             (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod))
-
+        
+        # Predict posterior mean from predicted noise and xT
         self.noise_posterior_mean_x_t_coef = to_torch(np.sqrt(1. / alphas))
         self.noise_posterior_mean_noise_coef = to_torch(betas / (np.sqrt(alphas) * np.sqrt(1. - alphas_cumprod)))
 
+        # Coefs of classifier-guided diffusion model 
+        # shift the predict mean toward true posterior mean. 
         self.shift_coef = to_torch(- np.sqrt(alphas) * (1. - alphas_cumprod_prev) / np.sqrt(1. - alphas_cumprod))
 
         # SNR-weighted loss coefficients
@@ -682,11 +780,12 @@ class GaussianDiffusion:
         ddim = DDIM(new_betas, timestep_map, self.device)
         return ddim.shift_ddim_sample_loop(decoder, z, x_T, stop_percent=stop_percent, disable_tqdm=disable_tqdm)
 
-    def representation_learning_diffae_sample(self, ddim_style, encoder, unet, x_0, x_T, z=None, disable_tqdm=False):
+    def representation_learning_diffae_sample(self, ddim_style, encoder, unet, x_0, x_T, noise_level=None, z=None, disable_tqdm=False):
         """
         DDIM sampling for DAE using a standard diffusion autoencoder approach.
         
         This method is similar to the original DiffAE implementation using semantic guidance.
+        Include option to sample from a specific noise level
         
         Args:
             ddim_style (str): String in format 'ddim{steps}' indicating number of DDIM steps
@@ -694,6 +793,8 @@ class GaussianDiffusion:
             unet (nn.Module): Conditional UNet for denoising
             x_0 (torch.Tensor): Reference clean tensor to extract semantic features from
             x_T (torch.Tensor): Starting noise tensor
+            noise_level (int): if specificed, the sampling step will start from this noise level (t < T = 1000).
+                the starting noised image x_T is assumed corresponding to this noise_level t. 
             z (torch.Tensor, optional): Pre-computed semantic embedding
             disable_tqdm (bool): Whether to disable the progress bar
             
@@ -702,11 +803,14 @@ class GaussianDiffusion:
         """
         if z is None:
             z = encoder(x_0)
-        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
+        if noise_level:
+            new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy()[:noise_level])
+        else: 
+            new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
         ddim = DDIM(new_betas, timestep_map, self.device)
-        return ddim.ddim_sample_loop(unet, x_T, z)
+        return ddim.ddim_sample_loop(unet, x_T, z, disable_tqdm=disable_tqdm)
 
-    def representation_learning_diffae_encode(self, ddim_style, encoder, unet, x_0, z=None):
+    def representation_learning_diffae_encode(self, ddim_style, encoder, unet, x_0, z=None, disable_tqdm=True):
         """
         DDIM encoding for DAE using a standard diffusion autoencoder approach.
         
@@ -724,7 +828,7 @@ class GaussianDiffusion:
             z = encoder(x_0)
         new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
         ddim = DDIM(new_betas, timestep_map, self.device)
-        return ddim.ddim_encode_loop(unet, x_0, z)
+        return ddim.ddim_encode_loop(unet, x_0, z, disable_tqdm=disable_tqdm)
 
     def representation_learning_ddim_encode(self, ddim_style, encoder, decoder, x_0, z=None):
         """

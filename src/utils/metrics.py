@@ -2,8 +2,10 @@ import numpy as np
 import json
 import torch.nn.functional as F
 import torch
+import torch.nn as nn
 from monai.transforms import ScaleIntensity
-from monai.metrics.regression import SSIMMetric
+from monai.metrics.regression import SSIMMetric, PSNRMetric
+import scipy
 
 
 def to_serializable(obj):
@@ -147,3 +149,190 @@ def ssim(x, x_recons):
     )
 
     return ssim_metric(x, x_recons).cpu().numpy()
+
+def psnr(x, x_recons):
+    """
+    Compute PSNR metric between x_origin and x_recons
+    max_val = 1.0
+    """
+    psnr = PSNRMetric(max_val=1.0, 
+                      reduction="mean")
+    return psnr(x, x_recons)
+
+def get_eval_dictionary():
+    _eval = {
+        'IDs': [],
+        'x': [],
+        'reconstructions': [],
+        'diffs': [],
+        'diffs_volume': [],
+        'Segmentation': [],
+        'reconstructionTimes': [],
+        'latentSpace': [],
+        'Age': [],
+        'AgeGroup': [],
+        'l1reconstructionErrors': [],
+        'l1recoErrorAll': [],
+        'l1recoErrorUnhealthy': [],
+        'l1recoErrorHealthy': [],
+        'l2recoErrorAll': [],
+        'l2recoErrorUnhealthy': [],
+        'l2recoErrorHealthy': [],
+        'l1reconstructionErrorMean': 0.0,
+        'l1reconstructionErrorStd': 0.0,
+        'l2reconstructionErrors': [],
+        'l2reconstructionErrorMean': 0.0,
+        'l2reconstructionErrorStd': 0.0,
+        'HausPerVol': [],
+        'TPPerVol': [],
+        'FPPerVol': [],
+        'FNPerVol': [],
+        'TNPerVol': [],
+        'TPRPerVol': [],
+        'FPRPerVol': [],
+        'TPTotal': [],
+        'FPTotal': [],
+        'FNTotal': [],
+        'TNTotal': [],
+        'TPRTotal': [],
+        'FPRTotal': [],
+
+        'PrecisionPerVol': [],
+        'RecallPerVol': [],
+        'PrecisionPerSlice': [],
+        'RecallPerSlice': [],
+        'lesionSizePerSlice': [],
+        'lesionSizePerVol': [],
+        'Dice': [],
+        'DiceScorePerSlice': [],
+        'DiceScorePerVol': [],
+        'BestDicePerVol': [],
+        'BestThresholdPerVol': [],
+        'AUCPerVol': [],
+        'AUPRCPerVol': [],
+        'SpecificityPerVol': [],
+        'AccuracyPerVol': [],
+        'TPgradELBO': [],
+        'FPgradELBO': [],
+        'FNgradELBO': [],
+        'TNgradELBO': [],
+        'TPRgradELBO': [],
+        'FPRgradELBO': [],
+        'DicegradELBO': [],
+        'DiceScorePerVolgradELBO': [],
+        'BestDicePerVolgradELBO': [],
+        'BestThresholdPerVolgradELBO': [],
+        'AUCPerVolgradELBO': [],
+        'AUPRCPerVolgradELBO': [],
+        'KLD_to_learned_prior':[],
+
+        'AUCAnomalyCombPerSlice': [], # PerVol!!! + Confusionmatrix.
+        'AUPRCAnomalyCombPerSlice': [],
+        'AnomalyScoreCombPerSlice': [],
+
+
+        'AUCAnomalyKLDPerSlice': [],
+        'AUPRCAnomalyKLDPerSlice': [],
+        'AnomalyScoreKLDPerSlice': [],
+
+
+        'AUCAnomalyRecoPerSlice': [],
+        'AUPRCAnomalyRecoPerSlice': [],
+        'AnomalyScoreRecoPerSlice': [],
+        'AnomalyScoreRecoBinPerSlice': [],
+        'AnomalyScoreAgePerSlice': [],
+        'AUCAnomalyAgePerSlice': [],
+        'AUPRCAnomalyAgePerSlice': [],
+
+        'labelPerSlice' : [],
+        'labelPerVol' : [],
+        'AnomalyScoreCombPerVol' : [],
+        'AnomalyScoreCombiPerVol' : [],
+        'AnomalyScoreCombMeanPerVol' : [],
+        'AnomalyScoreRegPerVol' : [],
+        'AnomalyScoreRegMeanPerVol' : [],
+        'AnomalyScoreRecoPerVol' : [],
+        'AnomalyScoreCombPriorPerVol': [],
+        'AnomalyScoreCombiPriorPerVol': [],
+        'AnomalyScoreAgePerVol' : [],
+        'AnomalyScoreRecoMeanPerVol' : [],
+        'DiceScoreKLPerVol': [],
+        'DiceScoreKLCombPerVol': [],
+        'BestDiceKLCombPerVol': [],
+        'BestDiceKLPerVol': [],
+        'AUCKLCombPerVol': [],
+        'AUPRCKLCombPerVol': [],
+        'AUCKLPerVol': [],
+        'AUPRCKLPerVol': [],
+        'TPKLCombPerVol': [],
+        'FPKLCombPerVol': [],
+        'TNKLCombPerVol': [],
+        'FNKLCombPerVol': [],
+        'TPRKLCombPerVol': [],
+        'FPRKLCombPerVol': [],
+        'TPKLPerVol': [],
+        'FPKLPerVol': [],
+        'TNKLPerVol': [],
+        'FNKLPerVol': [],
+        'TPRKLPerVol': [],
+        'FPRKLPerVol': [],
+    }
+    return _eval
+
+def _test_step(self, data_recon, data_orig, data_seg, data_mask, batch_idx, ID, label_vol) :
+        
+        # calculate the residual image
+        if self.cfg.get('residualmode','l1'): # l1 or l2 residual
+            diff_volume = torch.abs((data_orig-data_recon))
+        else:
+            diff_volume = (data_orig-data_recon)**2
+
+       # Calculate Reconstruction errors with respect to anomal/normal regions
+        l1err = nn.functional.l1_loss(data_recon.squeeze(),data_orig.squeeze())
+        l2err = nn.functional.mse_loss(data_recon.squeeze(),data_orig.squeeze())
+        l1err_anomal = nn.functional.l1_loss(data_recon.squeeze()[data_seg.squeeze() > 0],data_orig[data_seg > 0]) 
+        l1err_healthy = nn.functional.l1_loss(data_recon.squeeze()[data_seg.squeeze() == 0],data_orig[data_seg == 0]) 
+        l2err_anomal = nn.functional.mse_loss(data_recon.squeeze()[data_seg.squeeze() > 0],data_orig[data_seg > 0]) 
+        l2err_healthy = nn.functional.mse_loss(data_recon.squeeze()[data_seg.squeeze() == 0],data_orig[data_seg == 0])
+
+        # store in eval dict
+        self.eval_dict['l1recoErrorAll'].append(l1err.item())
+        self.eval_dict['l1recoErrorUnhealthy'].append(l1err_anomal.item())
+        self.eval_dict['l1recoErrorHealthy'].append(l1err_healthy.item())
+        self.eval_dict['l2recoErrorAll'].append(l2err.item())
+        self.eval_dict['l2recoErrorUnhealthy'].append(l2err_anomal.item())
+        self.eval_dict['l2recoErrorHealthy'].append(l2err_healthy.item())
+
+        # move data to CPU
+        data_seg = data_seg.cpu() 
+        data_mask = data_mask.cpu()
+        diff_volume = diff_volume.cpu()
+        data_orig = data_orig.cpu()
+        data_recon = data_recon.cpu()
+        # binarize the segmentation
+        data_seg[data_seg > 0] = 1
+        data_mask[data_mask > 0] = 1
+
+def apply_brainmask(x, brainmask, erode , iterations):
+    strel = scipy.ndimage.generate_binary_structure(2, 1)
+    brainmask = np.expand_dims(brainmask, 2)
+    if erode:
+        brainmask = scipy.ndimage.morphology.binary_erosion(np.squeeze(brainmask), structure=strel, iterations=iterations)
+    return np.multiply(np.squeeze(brainmask), np.squeeze(x))
+
+def apply_brainmask_volume(vol,mask_vol,erode=True, iterations=10) : 
+    for s in range(vol.squeeze().shape[2]): 
+        slice = vol.squeeze()[:,:,s]
+        mask_slice = mask_vol.squeeze()[:,:,s]
+        eroded_vol_slice = apply_brainmask(slice, mask_slice, erode = True, iterations=vol.squeeze().shape[1]//25)
+        vol.squeeze()[:,:,s] = eroded_vol_slice
+    return vol
+
+def apply_3d_median_filter(volume, kernelsize=5):  # kernelsize 5 works quite well
+    volume = scipy.ndimage.filters.median_filter(volume, (kernelsize, kernelsize, kernelsize))
+    return volume
+
+def apply_2d_median_filter(volume, kernelsize=5):  # kernelsize 5 works quite well
+    img = scipy.ndimage.filters.median_filter(volume, (kernelsize, kernelsize))
+    return img
+

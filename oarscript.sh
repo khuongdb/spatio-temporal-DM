@@ -53,4 +53,4 @@ source .venv/bin/activate
 
 
 # TRAIN DiffAE - Starmen with Pytorch CLI
-python3 main_diffae.py --config configs/diffae_repr_learn.yaml fit
+python3 main_diffae.py --config configs/diffae_repr_learn.yaml test
