@@ -808,7 +808,7 @@ class GaussianDiffusion:
         else: 
             new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
         ddim = DDIM(new_betas, timestep_map, self.device)
-        return ddim.ddim_sample_loop(unet, x_T, z, disable_tqdm=disable_tqdm)
+        return ddim.ddim_sample_loop(unet, x_T, condition=z, disable_tqdm=disable_tqdm)
 
     def representation_learning_diffae_encode(self, ddim_style, encoder, unet, x_0, z=None, disable_tqdm=True):
         """
