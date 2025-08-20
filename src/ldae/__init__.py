@@ -5,3 +5,5 @@ from .enc_regression import EncoderRegressor
 from .ldae_2d import  LatentDiffusionAutoencoders2D
 from .ldae import LatentDiffusionAutoencoders
 from .condDDPM import CondDDPM
+from .feature_extractor import FeatureExtractorLitmodel
+from .tadm import TADMLitModel

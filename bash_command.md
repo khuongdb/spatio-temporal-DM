@@ -59,10 +59,30 @@ rsync -avxP  bdang@grenoble.g5k:~/project/spartDM/{workdir,oarlogs} ~/projects/s
 Grom grenoble, the best cluster is `kinovis` with 6 nodes - each node has 2 x L40S GPUs. 
 
 ```bash
+oarsub -q besteffort -l "nodes=1/gpu=1" -I
+
 oarsub -q besteffort -p cluster='kinovis' -l "nodes=1/gpu=2" -I
 ```
 
 - `p`: property - query by SQL syntax. It is best practice to enclose query in double quote `""`.
+
+## Connect to cluster with specific private key (for debug in VSCode)
+
+You must add `-i ~/.ssh/id_rsa_g5k_internal` to your oarsub reservation commands:
+
+```bash
+oarsub -i ~/.ssh/id_rsa_g5k_internal -q besteffort -p cluster='kinovis' -l "nodes=1/gpu=1" -I
+```
+
+Then connect from VSCode using ssh `*.g5koar` with `*` is the name of host, e.g: vercors2-2
+
+To check host, using several methods: 
+
+```bash
+oarsub -C <job_id>
+
+hostname
+```
 
 ## Nancy cluster - P3 priority
 

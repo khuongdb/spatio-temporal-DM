@@ -31,7 +31,7 @@ from generative.metrics import SSIMMetric, MultiScaleSSIMMetric, FIDMetric
 from generative.losses import PerceptualLoss
 from einops import rearrange
 import numpy as np
-from src.utils import plot_comparison_starmen
+from src.utils.visualization import plot_comparison_starmen
 
 class LatentDiffusionAutoencoders2D(L.LightningModule):
     def __init__(self,

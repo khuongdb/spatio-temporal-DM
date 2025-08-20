@@ -145,7 +145,7 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
                         dtype=np.float64)
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
-    
+
 def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
     """
     Create a beta schedule that discretizes the given alpha_t_bar function,
@@ -242,17 +242,17 @@ class GaussianDiffusion:
         # coef for posterior distribution of q(x_{t-1} | x_t, x_0)
         # q(x_{t-1} | x_t, x_0) = N(\mu_t(x_t, x_0), \sigma_t)
         # posterior mean: \mu_t = coef1 x0 + coef2 x_t
-        # E.q (6) and (7) in DDPM arXiv:2006.11239v2 
+        # E.q (6) and (7) in DDPM arXiv:2006.11239v2
         self.x_0_posterior_mean_x_0_coef = to_torch(betas * np.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
         self.x_0_posterior_mean_x_t_coef = to_torch(
             (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod))
-        
+
         # Predict posterior mean from predicted noise and xT
         self.noise_posterior_mean_x_t_coef = to_torch(np.sqrt(1. / alphas))
         self.noise_posterior_mean_noise_coef = to_torch(betas / (np.sqrt(alphas) * np.sqrt(1. - alphas_cumprod)))
 
-        # Coefs of classifier-guided diffusion model 
-        # shift the predict mean toward true posterior mean. 
+        # Coefs of classifier-guided diffusion model
+        # shift the predict mean toward true posterior mean.
         self.shift_coef = to_torch(- np.sqrt(alphas) * (1. - alphas_cumprod_prev) / np.sqrt(1. - alphas_cumprod))
 
         # SNR-weighted loss coefficients
@@ -289,6 +289,12 @@ class GaussianDiffusion:
         """
         original_timesteps = original_alphas_cumprod.shape[0]
         ddim_step = int(ddim_style[len("ddim"):])
+
+        if ddim_step > original_timesteps:
+            print(f"The number of DDIM timesteps ({ddim_step}) need to be <= number of DDPM timesteps ({original_timesteps}) \
+                  \nDDIM step set to DDPM step ({original_timesteps}) by default.")
+            ddim_step = original_timesteps
+
         # data: x_{-1}  noisy latents: x_{0}, x_{1}, x_{2}, ..., x_{T-2}, x_{T-1}
         # encode: treat input x_{-1} as starting point x_{0}
         # sample: treat ending point x_{0} as output x_{-1}
@@ -307,7 +313,7 @@ class GaussianDiffusion:
 
     # x_start: batch_size x channel x height x width
     # t: batch_size
-    def q_sample(self, x_0, t, noise):
+    def q_sample(self, x_0, t, noise=None):
         """
         Forward diffusion process: q(x_t | x_0).
         
@@ -315,13 +321,20 @@ class GaussianDiffusion:
         
         Args:
             x_0 (torch.Tensor): Initial sample (clean image/latent)
-            t (torch.Tensor): Timesteps to compute noise for
+            t (torch.Tensor | int): Timesteps to compute noise for
             noise (torch.Tensor): Random noise to add
             
         Returns:
             torch.Tensor: Noisy sample x_t at the specified timestep
         """
         shape = x_0.shape
+
+        if noise is None: 
+            noise = torch.randn_like(x_0)
+
+        if isinstance(t, int) or t.dim() == 0:
+            t = torch.full((x_0.shape[0], ), t, device=self.device)
+
         return (
                 self.extract_coef_at_t(self.sqrt_alphas_cumprod, t, shape) * x_0
                 + self.extract_coef_at_t(self.sqrt_one_minus_alphas_cumprod, t, shape) * noise
@@ -584,6 +597,47 @@ class GaussianDiffusion:
             'prediction_loss': prediction_loss,
         }
 
+    def regular_train_tadm_one_batch(self, 
+                                     denoise_fn, 
+                                     x_0,
+                                     ages,
+                                     diff_ages, 
+                                     patient_condition=None, 
+                                     condition=None):
+        """
+        Train TADM one batch using baseline x_0 and age difference delta_a
+        
+        This is similar to the standard training method for diffusion models, 
+        but instead of noise and denoise the original image, we apply DDPM on the residual image 
+        
+        Args:
+            denoise_fn (callable): Denoising function (TADMUNet)
+            x_0 (torch.Tensor): Here x_0 is the residual image x_0 = x_target - x_start
+            condition (torch.Tensor, optional): Conditional input to the denoising function
+            
+        Returns:
+            dict: Dictionary containing the prediction loss
+        """
+        shape = x_0.shape
+        batch_size = shape[0]
+        t = torch.randint(0, self.timesteps, (batch_size,), device=self.device, dtype=torch.long)
+        noise = torch.randn_like(x_0)
+
+        x_t = self.q_sample(x_0=x_0, t=t, noise=noise)
+        predicted_noise = denoise_fn(x=x_t,
+                                     time=t, 
+                                     cond=condition, 
+                                     img_lr_up=x_0, 
+                                     diff_ages=diff_ages, 
+                                     patient_condition=patient_condition, 
+                                     age=ages)
+
+        prediction_loss = self.p_loss(noise, predicted_noise)
+
+        return {
+            'prediction_loss': prediction_loss,
+        }
+
     def regular_ddim_encode(self, ddim_style, denoise_fn, x_0, disable_tqdm=False):
         """
         Standard DDIM encoding process with option to disable progress bar.
@@ -780,7 +834,15 @@ class GaussianDiffusion:
         ddim = DDIM(new_betas, timestep_map, self.device)
         return ddim.shift_ddim_sample_loop(decoder, z, x_T, stop_percent=stop_percent, disable_tqdm=disable_tqdm)
 
-    def representation_learning_diffae_sample(self, ddim_style, encoder, unet, x_0, x_T, noise_level=None, z=None, disable_tqdm=False):
+    def representation_learning_diffae_sample(self, 
+                                              ddim_style, 
+                                              encoder, 
+                                              unet, 
+                                              x_0, 
+                                              x_T, 
+                                              start_t=None, 
+                                              z=None, 
+                                              disable_tqdm=False):
         """
         DDIM sampling for DAE using a standard diffusion autoencoder approach.
         
@@ -793,7 +855,7 @@ class GaussianDiffusion:
             unet (nn.Module): Conditional UNet for denoising
             x_0 (torch.Tensor): Reference clean tensor to extract semantic features from
             x_T (torch.Tensor): Starting noise tensor
-            noise_level (int): if specificed, the sampling step will start from this noise level (t < T = 1000).
+            start_t (int): if specificed, the sampling step will start from this noise level (t < T = 1000).
                 the starting noised image x_T is assumed corresponding to this noise_level t. 
             z (torch.Tensor, optional): Pre-computed semantic embedding
             disable_tqdm (bool): Whether to disable the progress bar
@@ -803,34 +865,59 @@ class GaussianDiffusion:
         """
         if z is None:
             z = encoder(x_0)
-        if noise_level:
-            new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy()[:noise_level])
-        else: 
-            new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
+        if start_t is not None:
+            start_t = start_t
+        else:
+            start_t = self.timesteps
+
+        # Note: for a start_t, the timestep_map will be [0, ..., start_t - 1]
+        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy()[:start_t])
         ddim = DDIM(new_betas, timestep_map, self.device)
         return ddim.ddim_sample_loop(unet, x_T, condition=z, disable_tqdm=disable_tqdm)
 
-    def representation_learning_diffae_encode(self, ddim_style, encoder, unet, x_0, z=None, disable_tqdm=True):
+    def representation_learning_diffae_encode(
+        self,
+        ddim_style,
+        encoder,
+        unet,
+        x_0,
+        noise_level=None,
+        z=None,
+        disable_tqdm=True,
+        return_intermediate=False
+    ):
         """
         DDIM encoding for DAE using a standard diffusion autoencoder approach.
-        
+
         Args:
             ddim_style (str): String in format 'ddim{steps}' indicating number of DDIM steps
             encoder (nn.Module): Semantic encoder network
             unet (nn.Module): Conditional UNet for denoising
             x_0 (torch.Tensor): Clean input tensor to encode
             z (torch.Tensor, optional): Pre-computed semantic embedding
-            
+            noise_level (int, optional): if specific, DDIM will encode x0 to noise_level - 1 (DDPM timesteps)
+            return_intermediate (bool, optional): if True, return the intermediate result at each timesteps (DDIM timesteps)
+
         Returns:
             torch.Tensor: Encoded latent in noise space
         """
         if z is None:
             z = encoder(x_0)
-        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
+        if noise_level is None:
+            noise_level = self.timesteps
+        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(
+            ddim_style, self.alphas_cumprod.cpu().numpy()[:noise_level]
+        )
         ddim = DDIM(new_betas, timestep_map, self.device)
-        return ddim.ddim_encode_loop(unet, x_0, z, disable_tqdm=disable_tqdm)
+        return ddim.ddim_encode_loop(
+            unet,
+            x_0,
+            condition=z,
+            disable_tqdm=disable_tqdm,
+            return_intermediate=return_intermediate,
+        )
 
-    def representation_learning_ddim_encode(self, ddim_style, encoder, decoder, x_0, z=None):
+    def representation_learning_ddim_encode(self, ddim_style, encoder, decoder, x_0, z=None, disable_tqdm=True):
         """
         DDIM encoding guided by the semantic representation for representation learning (PDAE approach).
         
@@ -850,7 +937,7 @@ class GaussianDiffusion:
             z = encoder(x_0)
         new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
         ddim = DDIM(new_betas, timestep_map, self.device)
-        return ddim.shift_ddim_encode_loop(decoder, z, x_0, disable_tqdm=True)
+        return ddim.shift_ddim_encode_loop(decoder, z, x_0, disable_tqdm=disable_tqdm)
 
     def latent_representation_learning_ddim_encode(self, ddim_style, encoder, decoder, x_0, z_0, style=None, disable_tqdm=False):
         """
@@ -920,7 +1007,7 @@ class GaussianDiffusion:
         y_sem = encoder(x_0)
         inferred_z_T = self.latent_representation_learning_ddim_encode(encoder_ddim_style, None, decoder, None, z_0, y_sem, disable_tqdm)
         return self.representation_learning_ddim_sample(decoder_ddim_style, None, decoder, None, inferred_z_T, y_sem, disable_tqdm=disable_tqdm)
-    
+
     def representation_learning_gap_measure(self, encoder, decoder, x_0):
         """
         Measure the posterior mean gap for representation learning evaluation.
@@ -999,6 +1086,63 @@ class GaussianDiffusion:
         autoencoder_predicted_x_0 = self.predicted_noise_to_predicted_x_0(x_t, t, autoencoder_predicted_noise)
 
         return predicted_x_0, autoencoder_predicted_x_0
+
+    """
+    TADM methods
+    """
+
+    def regular_tadm_sample(
+        self,
+        ddim_style,
+        encoder,
+        unet,
+        x_0,
+        x_T,
+        diff_ages,
+        ages,
+        patient_condition=None,
+        start_t=None,
+        z=None,
+        disable_tqdm=False,
+    ):
+        """
+        DDIM sampling for TADM using a standard diffusion autoencoder approach.
+        
+        This method is similar to the original DiffAE implementation using semantic guidance.
+        Include option to sample from a specific noise level
+        
+        Args:
+            ddim_style (str): String in format 'ddim{steps}' indicating number of DDIM steps
+            encoder (nn.Module): Semantic encoder network
+            unet (nn.Module): Conditional UNet for denoising
+            x_0 (torch.Tensor): Reference clean tensor to extract semantic features from
+            x_T (torch.Tensor): Starting noise tensor
+            start_t (int): if specificed, the sampling step will start from this noise level (t < T = 1000).
+                the starting noised image x_T is assumed corresponding to this noise_level t. 
+            z (torch.Tensor, optional): Pre-computed semantic embedding
+            disable_tqdm (bool): Whether to disable the progress bar
+            
+        Returns:
+            torch.Tensor: Generated sample guided by the semantic features
+        """
+        if z is None:
+            z = encoder(x_0)
+        if start_t is not None:
+            start_t = start_t
+        else:
+            start_t = self.timesteps
+
+        # Note: for a start_t, the timestep_map will be [0, ..., start_t - 1]
+        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy()[:start_t])
+        ddim = DDIM(new_betas, timestep_map, self.device)
+        return ddim.ddim_sample_loop(unet, 
+                                     x_T, 
+                                     condition=z, 
+                                     disable_tqdm=disable_tqdm,
+                                     img_lr_up=x_0, 
+                                     diff_ages=diff_ages, 
+                                     age=ages, 
+                                     patient_condition=patient_condition)
 
     """
         latent (If you want to train another DDPM on the learned semantic code)
@@ -1209,7 +1353,7 @@ class GaussianDiffusion:
 
         return self.representation_learning_ddim_sample(ddim_style, None, decoder, None, inferred_x_T, z_manipulated,
                                                         stop_percent=0.0)
-    
+
     def latent_semantic_manipulation(self, ddim_style, encoder, decoder, x_0, z_0, mean, std, direction, scale, disable_tqdm=False):
         """
         Manipulate the latent representation of the input image by adding a scaled direction vector to the normalized
@@ -1237,10 +1381,104 @@ class GaussianDiffusion:
         manipulation = norm_y_sem + scale * math.sqrt(embedding_dim) * F.normalize(direction, dim=1)
         y_sem_manipulated = self.denormalize(manipulation, mean, std)
         return self.representation_learning_ddim_sample(ddim_style, None, decoder, None, inferred_z_T, y_sem_manipulated, disable_tqdm=disable_tqdm)
-    
+
     """
         Interpolation
     """
+
+    def lerp_slerp_interpolation(
+        self,
+        ddim_encode,
+        ddim_decode,
+        encoder,
+        decoder,
+        x_0,
+        x_1,
+        z_0=None,
+        z_1=None,
+        alpha=0.5,
+        disable_tqdm=False,
+        noise_level=None,
+        mode=["lerp", "slerp"]
+    ):
+        """
+        Normal lerp_slerp interpolation between two images (DiffAE method without latent representation)
+        Lerp and Slerp interpolation between two images. Lerp will be applied on the semantic representation and Slerp
+        on the stochastic code.
+        Args:
+            encoder: The encoder model to extract the latent representation.
+            decoder: The decoder model to reconstruct the image.
+            x_0 (torch.tensor): The first input image tensor.
+            x_1 (torch.tensor): The second input image tensor.
+            z_0 (torch.tensor, optional): The stochastic encode of the first input image.
+            z_1 (torch.tensor, optional): The stochastic encode of the second input image.
+            alpha: The interpolation factor (0.0 to 1.0).
+            diffae_kwargs (dict, optional): keyword argumetns for DiffAE stochastic encoder. Only needed if z_0 and z_1 is None. 
+            noise_level (int, optional): noise level used to perform stochastic encode. 
+                If not specific, it will encode to T = self.timesteps.
+            mode (list[str]): define the mode of interpolation technique for semantic embedding ans stochastic embedding.
+                "lerp": linear interpolation, default in the semantic space.
+                "slerp": spherical linear interpolation, default in stochastic space. 
+        """
+        y_sem_0 = encoder(x_0)
+        y_sem_1 = encoder(x_1)
+
+        def get_mode(mode):
+            if mode == "lerp":
+                func = lerp
+            elif mode == "slerp":
+                func = slerp
+            else:
+                raise ValueError(f"incorrect mode {mode}. \
+                                 Please use 'lerp' for linear interpolation or 'slerp' for spherical linear interpolation.")
+            return func
+
+        funcs = [get_mode(m) for m in mode]
+
+        if noise_level is None:
+            noise_level = self.timesteps
+
+        if z_0 is None:
+            z_0 = self.representation_learning_diffae_encode(
+                ddim_style=ddim_encode,
+                encoder=None,
+                unet=decoder, 
+                x_0=x_0, 
+                z=y_sem_0, 
+                disable_tqdm=disable_tqdm,
+                noise_level=noise_level
+            )
+
+        if z_1 is None:
+            z_1 = self.representation_learning_diffae_encode(
+                ddim_style=ddim_encode,
+                encoder=None,
+                unet=decoder, 
+                x_0=x_1, 
+                z=y_sem_1, 
+                disable_tqdm=disable_tqdm,
+                noise_level=noise_level
+            )
+
+        y_sem = funcs[0](y_sem_0, y_sem_1, alpha)
+        z_T = funcs[1](z_0, z_1, alpha)
+
+        x_inter = self.representation_learning_diffae_sample(
+            ddim_style=ddim_decode, 
+            encoder=None, 
+            unet=decoder, 
+            x_0=None, 
+            x_T=z_T, 
+            z=y_sem, 
+            start_t=noise_level, 
+            disable_tqdm=disable_tqdm)
+
+        return {
+            "z_0": z_0,
+            "z_1": z_1,
+            "z_T": z_T,
+            "x": x_inter
+        }
 
     def latent_lerp_slerp_interpolation(self, ddim_style, encoder, decoder, x_0, x_1, z_0, z_1, alpha, disable_tqdm=False):
         """
@@ -1262,7 +1500,7 @@ class GaussianDiffusion:
         y_sem = lerp(y_sem_0, y_sem_1, alpha)
         z_T = slerp(inferred_z_T_0, inferred_z_T_1, alpha)
         return self.representation_learning_ddim_sample(ddim_style, None, decoder, None, z_T, y_sem, disable_tqdm=disable_tqdm)
-    
+
     def latent_lerp_lerp_interpolation(self, ddim_style, encoder, decoder, x_0, x_1, z_0, z_1, alpha, disable_tqdm=False):
         """
         Lerp and Lerp interpolation between two images. Lerp will be applied on both the semantic representation and stochastic one.
@@ -1282,7 +1520,7 @@ class GaussianDiffusion:
         y_sem = lerp(y_sem_0, y_sem_1, alpha)
         z_T = lerp(inferred_z_T_0, inferred_z_T_1, alpha)
         return self.representation_learning_ddim_sample(ddim_style, None, decoder, None, z_T, y_sem, disable_tqdm=disable_tqdm)
-    
+
     def representation_learning_ddim_trajectory_interpolation(self, ddim_style, decoder, z_1, z_2, x_T, alpha):
         """
         Perform trajectory interpolation between two semantic embeddings for PDAE.

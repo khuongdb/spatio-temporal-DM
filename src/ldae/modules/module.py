@@ -327,7 +327,7 @@ class ResBlock(TimestepBlock):
 class ResBlockShift(TimestepContextBlock):
 
     """
-    Residual block (ResBlock) with optional upsampling/downsampling and FiLM-style conditioning (scal-shift norm)
+    Residual block (ResBlock) with optional upsampling/downsampling and FiLM-style conditioning (scale-shift norm)
 
     Args:
         channels (int): Number of input channels to the block.

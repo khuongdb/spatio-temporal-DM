@@ -16,7 +16,6 @@ from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from src.utils.progress_bar import MyProgressBar
 from src.data.datamodules import StarmenDataModule
-from src.ldae.ldae_2d import LatentDiffusionAutoencoders2D
 import os
 import resource
 import torch
@@ -44,7 +43,8 @@ class MyCLI(LightningCLI):
         if stage == "test":
             ddim_style = stage_conf["model"]["init_args"]["test_ddim_style"]
             split = stage_conf["data"]["test_ds"]["split"]
-            stage_conf["trainer"]["logger"]["init_args"]["name"] = f"{split}_{ddim_style}"
+            noise_level = stage_conf["model"]["init_args"]["test_noise_level"]
+            stage_conf["trainer"]["logger"]["init_args"]["name"] = f"{split}_{ddim_style}_noise{noise_level}"
 
 
     def add_arguments_to_parser(self, parser):
@@ -72,8 +72,6 @@ if __name__ == '__main__':
     import sys
     import os
     sys.path.append(os.getcwd())
-
-    from lightning.pytorch.utilities.model_summary import ModelSummary
 
     cli_main()
 

@@ -52,5 +52,32 @@ source .venv/bin/activate
 #         --datasplit="train"
 
 
-# TRAIN DiffAE - Starmen with Pytorch CLI
-python3 main_diffae.py --config configs/diffae_repr_learn.yaml test
+# # DiffAE - Starmen with Pytorch CLI
+# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml fit
+
+# # DiffAE Inference
+# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml test \
+#                         --data.test_ds.split test
+
+# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml test \
+#                         --data.test_ds.split growing_circle20
+
+# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml test \
+#                         --data.test_ds.split darker_circle20
+
+# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml test \
+#                         --data.test_ds.split darker_line20
+
+# # Train OneClassSVM
+# python3 src/ldae/run_ocsvm.py --train
+
+# # Longitudinal_learning in conjuntion with leaspy
+# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml fit \
+#                         --model.init_args.mode longitudinal_learning \
+#                         --trainer.max_epochs 300
+
+# # Train TADM 
+# python3 main_diffae.py --config configs/starmen_tadm.yaml fit
+
+# Test TADM
+python3 main_diffae.py --config configs/startmen_tadm.yaml test

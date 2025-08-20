@@ -98,7 +98,7 @@ class DDIM:
         new_t = self.timestep_map[t]
         return new_t
 
-    def ddim_sample(self, denoise_fn, x_t, t, condition=None):
+    def ddim_sample(self, denoise_fn, x_t, t, condition=None, **kwarg):
         """
         Perform a single step of DDIM sampling (deterministic sampling).
         
@@ -115,7 +115,7 @@ class DDIM:
             torch.Tensor: The latent at timestep t-1.
         """
         shape = x_t.shape
-        predicted_noise = denoise_fn(x_t, self.t_transform(t), condition)
+        predicted_noise = denoise_fn(x_t, self.t_transform(t), condition, **kwarg)
         predicted_x_0 = self.extract_coef_at_t(self.sqrt_recip_alphas_cumprod, t, shape) * x_t - \
                         self.extract_coef_at_t(self.sqrt_recip_alphas_cumprod_m1, t, shape) * predicted_noise
         predicted_x_0 = predicted_x_0.clamp(-1, 1)
@@ -127,7 +127,7 @@ class DDIM:
 
         return predicted_x_0 * torch.sqrt(alpha_bar_prev) + torch.sqrt(1. - alpha_bar_prev) * new_predicted_noise
 
-    def ddim_sample_loop(self, denoise_fn, x_T, condition=None, disable_tqdm=False):
+    def ddim_sample_loop(self, denoise_fn, x_T, condition=None, disable_tqdm=False, **kwarg):
         """
         Perform complete DDIM sampling from pure noise to a clean sample.
         
@@ -147,10 +147,10 @@ class DDIM:
         img = x_T
         for i in tqdm(reversed(range(0 + 1, self.timesteps + 1)), desc='sampling loop time step', total=self.timesteps, disable=disable_tqdm):
             t = torch.full((batch_size,), i, device=self.device, dtype=torch.long)
-            img = self.ddim_sample(denoise_fn, img, t, condition)
+            img = self.ddim_sample(denoise_fn, img, t, condition, **kwarg)
         return img
 
-    def ddim_encode(self, denoise_fn, x_t, t, condition=None):
+    def ddim_encode(self, denoise_fn, x_t, t, condition=None, return_dict=False):
         """
         Perform a single step of DDIM encoding.
         
@@ -163,12 +163,14 @@ class DDIM:
             x_t (torch.Tensor): The latent at timestep t.
             t (torch.Tensor): The current timestep.
             condition (torch.Tensor, optional): Conditional information for guided encoding.
+            return_dict (bool, optional): if True, return all the intermediate result in a dict xt, pred_x0, t_transform 
             
         Returns:
             torch.Tensor: The latent at timestep t+1.
         """
         shape = x_t.shape
-        predicted_noise = denoise_fn(x_t, self.t_transform(t), condition)
+        t_transform = self.t_transform(t)
+        predicted_noise = denoise_fn(x_t, t_transform, condition)
 
         if isinstance(predicted_noise, tuple):
             pred, *_ = predicted_noise
@@ -183,9 +185,13 @@ class DDIM:
 
         alpha_bar_next = self.extract_coef_at_t(self.alphas_cumprod_next, t, shape)
 
-        return predicted_x_0 * torch.sqrt(alpha_bar_next) + torch.sqrt(1 - alpha_bar_next) * new_predicted_noise
+        x_t = predicted_x_0 * torch.sqrt(alpha_bar_next) + torch.sqrt(1 - alpha_bar_next) * new_predicted_noise
+        if return_dict:
+            return {"x_t": x_t, "pred_xstart": predicted_x_0, "t": t_transform[0].item()}
+        else:
+            return x_t
 
-    def ddim_encode_loop(self, denoise_fn, x_0, condition=None, disable_tqdm=False):
+    def ddim_encode_loop(self, denoise_fn, x_0, steps=None, condition=None, disable_tqdm=False, return_intermediate=False):
         """
         Perform complete DDIM encoding from a clean sample to pure noise.
         
@@ -198,17 +204,61 @@ class DDIM:
             x_0 (torch.Tensor): The clean input sample at timestep 0.
             condition (torch.Tensor, optional): Conditional information for guided encoding.
             disable_tqdm (bool, optional): Whether to disable the progress bar.
+            steps (int, optional): the number of timestep to encode the image. 
+                This is not necessary the noise_level, because 1 step in DDIM can correspond to n > 1 noise_level in DDPM.
+            return_intermediate (bool, optional): if True, return the result of intermediate steps. 
             
         Returns:
             torch.Tensor: The encoded noise at timestep T.
+            or 
+            dict: If `return_intermediate` is True, returns a dictionary with the following keys:
+                - xT (torch.Tensor): The encoded noise at timestep T.
+                - sample_t (list[torch.Tensor]): List of intermediate noisy samples x_t for t = 0...T.
+                - xstart_t (list[torch.Tensor]): List of predicted x₀ values at each intermediate step t = 0...T.
+                - T (list[int]): List of DDPM timesteps used for sampling x_t.
         """
         shape = x_0.shape
         batch_size = shape[0]
         x_t = x_0
-        for i in tqdm(range(0, self.timesteps), desc='encoding loop time step', total=self.timesteps, disable=disable_tqdm):
+        if steps is None: 
+            nb_steps = self.timesteps
+        else: 
+            nb_steps = steps
+
+        sample_t = []
+        xstart_t = []
+        T = []
+
+        for i in tqdm(range(0, nb_steps), desc='encoding loop time step', total=nb_steps, disable=disable_tqdm):
             t = torch.full((batch_size,), i, device=self.device, dtype=torch.long)
-            x_t = self.ddim_encode(denoise_fn, x_t, t, condition)
-        return x_t
+            out = self.ddim_encode(denoise_fn, x_t, t, condition, return_dict=return_intermediate)
+
+            if return_intermediate:
+                # out is a dict
+                x_t = out["x_t"]
+                sample_t.append(x_t)
+                xstart_t.append(out["pred_xstart"])
+                T.append(out["t"])
+            else: 
+                x_t = out
+
+        noise_level = self.t_transform(nb_steps)
+
+        if return_intermediate:
+            return {
+                # xT
+                "x_t": x_t,
+                # x_t at (1..T)
+                "sample_t": sample_t,
+                # pred_xstart
+                # xstart here is a bit different from sampling from T = T-1...0, may not be exact
+                "pred_xstart": xstart_t,
+                # DDPM timesteps
+                "T": T,
+                "noise_level": noise_level
+            }
+        else:
+            return x_t
 
     def shift_ddim_sample(self, decoder, z, x_t, t, use_shift=True):
         """

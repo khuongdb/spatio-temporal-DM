@@ -1,0 +1,132 @@
+# config.yaml
+fit: 
+    seed_everything: 42
+    model:
+        class_path: src.ldae.TADMLitModel
+        init_args:
+            spartial_dim: 2  # 2 (2D images) or 3 (3D MRI scan)
+            mode: tadm 
+            args: 
+                sr_scale: 1
+                use_attn: False 
+                res: True
+                up_input: False
+                use_wn: False
+                weight_init: False 
+                use_rrdb: True
+                fix_rrdb: False 
+                rrdb_num_block: 8
+                rrdb_num_feat: 64
+            timesteps_args:
+                timesteps: 1000
+                betas_type: linear
+            lr: 2.5e-4
+            ema_decay: 0.999
+            ema_update_after_step: 10
+    data:
+        data_dir: "data/starmen/output_random_noacc"
+        train_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "train"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        val_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "val"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        batch_size: 
+            train: 20
+            val: 20
+        num_workers: 10
+        shuffle: 
+            train: True
+            val: False
+    trainer:
+        accelerator: auto
+        devices: auto
+        max_epochs: 500
+        logger:
+            class_path: lightning.pytorch.loggers.TensorBoardLogger
+            init_args:
+                save_dir: "workdir/diffae_starmen"
+                name: ${fit.model.init_args.mode}
+        precision: 16-mixed
+        gradient_clip_val: 1.0
+        check_val_every_n_epoch: 10
+        # fast_dev_run: 1
+        # limit_train_batches: 1
+        # limit_val_batches: 1
+        num_sanity_val_steps: 1
+    early_stopping:
+        monitor: train_loss
+        patience: 100
+        mode: min
+        verbose: true
+    model_checkpoint:
+        monitor: val_loss
+        mode: min
+        auto_insert_metric_name: false
+        save_top_k: 1
+        filename: best
+        save_last: true
+        dirpath: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/
+    ckpt_path: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/best.ckpt
+test: 
+    seed_everything: 42
+    model:
+        class_path: src.ldae.TADMLitModel
+        init_args:
+            spartial_dim: 2  # 2 (2D images) or 3 (3D MRI scan)
+            mode: tadm 
+            args: 
+                sr_scale: 1
+                use_attn: False 
+                res: True 
+                up_input: False
+                use_wn: False
+                weight_init: False 
+                use_rrdb: True 
+                fix_rrdb: False 
+                rrdb_num_block: 8
+                rrdb_num_feat: 64
+            timesteps_args:
+                timesteps: 1000
+                betas_type: linear
+            lr: 2.5e-5
+            ema_decay: 0.999
+            ema_update_after_step: 10
+            log_img_every_epoch: 10
+            test_ddim_style: ddim100
+            test_noise_level: 250
+    data:
+        data_dir: ${fit.data.data_dir}
+        test_ds: 
+            data_dir: ${fit.data.data_dir}
+            split: "test"
+            nb_subject: null
+            save_data: False
+            workdir: "workdir"
+        batch_size: 
+            test: 1
+        num_workers: 5
+        shuffle: 
+            test: False
+    trainer:
+        accelerator: auto
+        devices: [0]
+        max_epochs: 500
+        logger:
+            class_path: lightning.pytorch.loggers.TensorBoardLogger
+            init_args:
+                save_dir: ${fit.trainer.logger.init_args.save_dir}/infer
+                name: ${test.data.test_ds.split}_${test.model.init_args.test_ddim_style}
+        precision: 16-mixed
+        gradient_clip_val: 1.0
+        num_sanity_val_steps: 1
+        # limit_test_batches: 1
+    early_stopping:
+        monitor: test_ssim_ldae_original
+    ckpt_path: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/best.ckpt

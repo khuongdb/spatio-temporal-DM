@@ -16,6 +16,8 @@
 from src.ldae.modules import SliceDistributed, PositionalEncoding, SoftAttention
 from src.ldae.base_nets.backbone_base import BackboneBaseModule
 import torch.nn as nn
+from src.ldae.modules.positional_encoding import SinusoidalPosEmb
+from einops import rearrange
 
 
 class AttentionSemanticEncoder(nn.Module):
@@ -79,12 +81,6 @@ class AttentionSemanticEncoder(nn.Module):
         x = x.squeeze(1)
         return x
 
-
-
-
-
-
-
 class SemanticEncoder(nn.Module):
     """
     Basic Backbone network for SemanticEncoder.
@@ -118,23 +114,43 @@ class SemanticEncoder(nn.Module):
         super().__init__()
         self.embedding_dim = emb_chans
         # Set the model parameters
-        self.backbone = BackboneBaseModule(**backbone_args)
+        self.backbone = BackboneBaseModule(**backbone_args, emb_dim=self.embedding_dim)
 
     def forward(self, x):
         return self.backbone(x)
 
+class SemanticEncoderAgeCond(SemanticEncoder):
+    def __init__(self, backbone_args, emb_chans=4, use_sigmoid=False):
+        super().__init__(backbone_args, emb_chans)
 
+        self.backbone.backbone.fc = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(2048, 512),
+            nn.SiLU(),
+            nn.Linear(512, 128),
+            nn.SiLU(),
+            nn.Linear(128, emb_chans),
+        )
 
-# def main():
-#     backbone_args = {
-#         "net_class_path": "torchvision.models.resnet50",
-#         "weights": "torchvision.models.ResNet50_Weights.DEFAULT",
-#         "freeze_perc": 0.5,
-#         "grayscale": True,
-#         "emb_dim": 512,
-#     }
-#     model = SemanticEncoder(backbone_args)
+        # self.age_emb = SinusoidalPosEmb(dim=emb_chans * 4)
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(1, emb_chans),
+            nn.SiLU(),
+            nn.Linear(emb_chans, emb_chans),
+            nn.SiLU()
+        )
 
-#     print("load model")
+        if use_sigmoid:
+            self.sigmoid = nn.Sigmoid()
+        else: 
+            self.sigmoid = nn.Identity()
 
-# main()
+    def forward(self, x, age):
+        # age_emb = self.age_emb(age)
+        age_emb = self.mlp(age)
+
+        x = self.backbone(x)
+        x = x + age_emb
+        return self.sigmoid(x)
+
