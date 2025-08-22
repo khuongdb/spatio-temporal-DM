@@ -230,13 +230,17 @@ def compute_prc(predictions, labels):
     return auprc, precisions, recalls, thresholds
 
 
-def dice(P, G):
-    psum = np.sum(P.flatten())
-    gsum = np.sum(G.flatten())
-    pgsum = np.sum(np.multiply(P.flatten(), G.flatten()))
-    score = (2 * pgsum) / (psum + gsum)
-    return score
+# def dice(P, G):
+#     psum = np.sum(P.flatten())
+#     gsum = np.sum(G.flatten())
+#     pgsum = np.sum(np.multiply(P.flatten(), G.flatten()))
+#     score = (2 * pgsum) / (psum + gsum)
+#     return score
 
+def dice(pred, truth):
+    num = 2 * ((pred * truth).sum(dim=(1, 2, 3)).type(torch.float))
+    den = (pred.sum(dim=(1, 2, 3)) + truth.sum(dim=(1, 2, 3))).type(torch.float)
+    return num / den
 
 def tpr(P, G):
     tp = np.sum(np.multiply(P.flatten(), G.flatten()))

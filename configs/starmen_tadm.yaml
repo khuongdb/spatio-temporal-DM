@@ -121,7 +121,7 @@ test:
         logger:
             class_path: lightning.pytorch.loggers.TensorBoardLogger
             init_args:
-                save_dir: ${fit.trainer.logger.init_args.save_dir}/infer
+                save_dir: ${fit.trainer.logger.init_args.save_dir}/infer/${fit.model.init_args.mode}
                 name: ${test.data.test_ds.split}_${test.model.init_args.test_ddim_style}
         precision: 16-mixed
         gradient_clip_val: 1.0
@@ -129,4 +129,4 @@ test:
         # limit_test_batches: 1
     early_stopping:
         monitor: test_ssim_ldae_original
-    ckpt_path: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/best.ckpt
+    ckpt_path: workdir/diffae_starmen/tadm/checkpoints/best.ckpt

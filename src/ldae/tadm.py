@@ -169,10 +169,10 @@ class TADMLitModel(L.LightningModule):
             del self.unet
             print("Deleted UNet model, maintaining only EMA model.")
         elif self.mode == "tadm":
-            # Delete the non-EMA models
-            del self.encoder
-            del self.decoder
-            print("Deleted encoder and decoder models, maintaining only EMA models.")
+            # # Delete the non-EMA models
+            # del self.encoder
+            # del self.decoder
+            # print("Deleted encoder and decoder models, maintaining only EMA models.")
 
             # Setup eval dict
             self.eval_dict_previous = {
@@ -480,7 +480,7 @@ class TADMLitModel(L.LightningModule):
 
                 if log_fig and len(out) > 0:
                     fig = out[0]
-                    caption = f"masked_input_{perc_seen}"
+                    caption = f"masked_input_{perc_seen:.1f}"
                     writer.add_figure(f"test_{save_idx:03}/{caption}", fig, self.global_step)
 
             # 4. oversampling
@@ -543,7 +543,7 @@ class TADMLitModel(L.LightningModule):
 
         # 1. Encoder image using RRDB network
         if self.args['use_rrdb']:
-            rrdb_out, cond = self.ema_encoder(img_lr, True)
+            rrdb_out, cond = self.encoder(img_lr, True)
         else:
             rrdb_out = img_lr_up
             cond = img_lr
@@ -551,8 +551,8 @@ class TADMLitModel(L.LightningModule):
         # 2. Sampling x from trained TADMUnet
         x_pred = self.gaussian_diffusion.regular_tadm_sample(
             ddim_style=self.test_ddim_style,
-            encoder=self.ema_encoder,
-            unet=self.ema_decoder,
+            encoder=self.encoder,
+            unet=self.decoder,
             x_0=img_lr_up,
             x_T=torch.randn_like(img_lr_up),
             z=cond,
@@ -612,11 +612,6 @@ class TADMLitModel(L.LightningModule):
         anomaly_gt_seg = batch["anomaly_gt_seg"]
 
         x0 = batch["x_origin"]
-        img_lr = x0[:, :-1, ...]
-        img_hr = x0[:, 1:, ...]
-        img_hr = rearrange(img_hr, "b t ... -> (b t) ...")  # prior image
-        img_lr = rearrange(img_lr, "b t ... -> (b t) ...")  # target image to predict
-        img_lr_up = img_lr.clone()  # just to align with TADM source code. 
 
         # ages and diff ages
         all_ages = batch["age"]
@@ -661,8 +656,8 @@ class TADMLitModel(L.LightningModule):
         # 2. Sampling x from trained TADMUnet
         x_pred = self.gaussian_diffusion.regular_tadm_sample(
             ddim_style=self.test_ddim_style,
-            encoder=self.ema_encoder,
-            unet=self.ema_decoder,
+            encoder=self.encoder,
+            unet=self.decoder,
             x_0=img_lr_up,
             x_T=torch.randn_like(img_lr_up),
             z=cond,
@@ -786,8 +781,8 @@ class TADMLitModel(L.LightningModule):
                 # 2. Sampling x from trained TADMUnet
                 x_pred = self.gaussian_diffusion.regular_tadm_sample(
                     ddim_style=self.test_ddim_style,
-                    encoder=self.ema_encoder,
-                    unet=self.ema_decoder,
+                    encoder=self.encoder,
+                    unet=self.decoder,
                     x_0=img_lr,
                     x_T=torch.randn_like(img_lr),
                     z=cond,
@@ -871,13 +866,13 @@ class TADMLitModel(L.LightningModule):
         diff_age = torch.tensor([1.], device=x0.device)
         for i in range(oversample_step):            
             # 1. encode image with RRDB
-            rrdb_out, cond = self.ema_encoder(img_lr, True)
+            rrdb_out, cond = self.encoder(img_lr, True)
 
             # 2. Sampling x from trained TADMUnet
             x_pred = self.gaussian_diffusion.regular_tadm_sample(
-                ddim_style="ddim10",
-                encoder=self.ema_encoder,
-                unet=self.ema_decoder,
+                ddim_style=self.test_ddim_style,
+                encoder=self.encoder,
+                unet=self.decoder,
                 x_0=img_lr,
                 x_T=torch.randn_like(img_lr),
                 z=cond,

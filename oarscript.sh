@@ -1,5 +1,5 @@
 #!/bin/bash 
-
+#OAR -n tadm_test_ddim100
 #OAR -q besteffort 
 #OAR -p gpu
 ##OAR -p cluster='graffiti'
@@ -80,4 +80,11 @@ source .venv/bin/activate
 # python3 main_diffae.py --config configs/starmen_tadm.yaml fit
 
 # Test TADM
-python3 main_diffae.py --config configs/startmen_tadm.yaml test
+python3 main_diffae.py --config configs/starmen_tadm.yaml test \
+                        --data.test_ds.split growing_circle20
+
+python3 main_diffae.py --config configs/starmen_tadm.yaml test \
+                        --data.test_ds.split darker_circle20
+
+python3 main_diffae.py --config configs/starmen_tadm.yaml test \
+                        --data.test_ds.split darker_line20

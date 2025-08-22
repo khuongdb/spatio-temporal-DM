@@ -49,7 +49,8 @@ def heat_map(output, target, FE, v=1.0, fe_layers=["layer2", "layer3"], use_gaus
     # combine i_d and f_d to generate anomaly_map
     anomaly_map = torch.zeros_like(f_d)
 
-    anomaly_map += f_d + v * (torch.max(f_d)/ torch.max(i_d)) * i_d  
+    # anomaly_map += f_d + v * (torch.max(f_d)/ torch.max(i_d)) * i_d  # scale i_d to f_d range
+    anomaly_map += f_d * (torch.max(i_d)/ torch.max(f_d)) + v * i_d  # scale f_d to i_d range
     if use_gaussian_blue:
         anomaly_map = gaussian_blur2d(
             anomaly_map , kernel_size=(kernel_size,kernel_size), sigma=(sigma,sigma)
