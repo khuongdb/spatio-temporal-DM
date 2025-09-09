@@ -146,15 +146,16 @@ test:
             ema_update_after_step: 10
             log_img_every_epoch: 10
             test_ddim_style: ddim100
-            test_noise_level: 250
+            test_noise_level: 50
             heatmap_v: 6.
+            use_xT_inferred: False
             fe_layers: ["layer1", "layer2", "layer3"]
 
     data:
         data_dir: ${fit.data.data_dir}
         test_ds: 
             data_dir: ${fit.data.data_dir}
-            split: "test"
+            split: "test_combine"
             nb_subject: null
             save_data: False
             workdir: "workdir"
@@ -176,7 +177,6 @@ test:
         gradient_clip_val: 1.0
         num_sanity_val_steps: 0
         # limit_test_batches: 1
-        # enable_progress_bar: false  # disable prog_bar in non-interactive mode on cluster. 
     early_stopping:
         monitor: test_ssim_ldae_original
     ckpt_path: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/best.ckpt

@@ -1,6 +1,5 @@
-# Modify from LDAE 
-# This model works with 2D toy example (Starmen) dataset so we dont need the AEKL module to calculate latent space. 
-
+# Modify from LDAE
+# This model works with 2D toy example (Starmen) dataset so we dont need the AEKL module to calculate latent space.
 
 
 # Copyright (c) 2025 Gabriele Lozupone (University of Cassino and Southern Lazio).
@@ -17,37 +16,49 @@
 # Contact: Gabriele Lozupone at gabriele.lozupone@unicas.it
 # -----------------------------------------------------------------------------
 
-import lightning as L
-import torch
 # import wandb
 import copy  # For copying model parameters
 import os
 
-from src.ldae.nets import AttentionSemanticEncoder
-from src.ldae.nets import UNet, ShiftUNet
-from src.ldae.diffusion import GaussianDiffusion
-from generative.networks.nets import AutoencoderKL
-from generative.metrics import SSIMMetric, MultiScaleSSIMMetric, FIDMetric
-from generative.losses import PerceptualLoss
-from einops import rearrange
+import lightning as L
 import numpy as np
-from src.utils.visualization import plot_comparison_starmen
+import torch
+from einops import rearrange
+from generative.metrics import FIDMetric
+from generative.networks.nets import AutoencoderKL
+
+from monai.losses import PerceptualLoss
+from monai.metrics.regression import MultiScaleSSIMMetric, PSNRMetric, SSIMMetric
+from src.ldae.diffusion import GaussianDiffusion
+from src.ldae.nets import AttentionSemanticEncoder, ShiftUNet, UNet, FeatureExtractor
+from src.utils.metrics import get_eval_dictionary, test_metrics
+from src.utils.visualization import (
+    tb_log_plot_comparison_2d,
+    tb_log_plot_heatmap,
+)
+
 
 class LatentDiffusionAutoencoders2D(L.LightningModule):
-    def __init__(self,
-                 spartial_dim: int = 2,
-                 enc_args: dict = None,
-                 unet_args: dict = None,
-                 vae_args: dict = None,
-                 vae_path: str = None, 
-                 timesteps_args: dict = None,
-                 lr: float = 2.5e-5,
-                 mode: str = "pretrain",
-                 pretrained_path: str = None,
-                 ema_decay: float = 0.9999,
-                 ema_update_after_step: int = 1,
-                 log_img_every_epoch: int = 10,
-                 test_ddim_style: str = "ddim100"):
+    def __init__(
+        self,
+        spartial_dim: int = 2,
+        enc_args: dict = None,
+        unet_args: dict = None,
+        vae_args: dict = None,
+        vae_path: str = None,
+        timesteps_args: dict = None,
+        lr: float = 2.5e-5,
+        mode: str = "pretrain",
+        pretrained_path: str = None,
+        ema_decay: float = 0.9999,
+        ema_update_after_step: int = 1,
+        log_img_every_epoch: int = 10,
+        test_ddim_style: str = "ddim100",
+        test_noise_level: int = 250,
+        use_xT_inferred: bool = False,
+        heatmap_v: float = 6.0,
+        fe_layers: list = ["layer1", "layer2", "layer3"],
+    ):
         """
             Initialize LDAE LightningModule.
 
@@ -80,10 +91,15 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
         self.ema_decay = ema_decay
         self.ema_update_after_step = ema_update_after_step
         self.test_ddim_style = test_ddim_style
+        self.test_noise_level = test_noise_level
+        self.use_xT_inferred = use_xT_inferred
+        self.heatmap_v = heatmap_v
+        self.fe_layers = fe_layers
 
-        # Set the metrics
-        self.ssim = SSIMMetric(spatial_dims=self.spartial_dim, data_range=1.0, kernel_size=4)
-        self.mssim = MultiScaleSSIMMetric(spatial_dims=self.spartial_dim, data_range=1.0, kernel_size=4)
+        # Set the metrics (for validation only)
+        self.ssim = SSIMMetric(
+            spatial_dims=self.spartial_dim, data_range=1.0, win_size=4
+        )  
 
         # Diffusion helper
         self.gaussian_diffusion = GaussianDiffusion(
@@ -118,7 +134,6 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                 See https://arxiv.org/pdf/2112.10752 Appendix G Details on Autoencoder Models for more details.
         """
 
-
         # ------------------- Pretrain Models -------------------
         if mode == "pretrain":
             self.unet = UNet(**unet_args)
@@ -137,6 +152,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                 weights = {key.replace('ema_unet.', ''): value for key, value in data['state_dict'].items()}
             except FileNotFoundError:
                 print(f"Pretrained model not found at {pretrained_path}")
+
             # ShiftUNet decoder
             self.decoder = ShiftUNet(
                 latent_dim=enc_args["emb_chans"],
@@ -183,13 +199,20 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
         self.gaussian_diffusion = GaussianDiffusion(
             self.timesteps_args, device=self.device
         )
-        # Add LPIPS metric
+        # Add similarity metrics
         self.lpips = PerceptualLoss(spatial_dims=self.spartial_dim,
                                     network_type="squeeze",
                                     is_fake_3d=True if self.spartial_dim == 3 else False,
                                     fake_3d_ratio=0.5)
         self.lpips = self.lpips.to(self.device)
-        print("LPIPS model loaded successfully.")
+        self.ssim = SSIMMetric(
+            spatial_dims=self.spartial_dim, data_range=1.0, win_size=4
+        )
+        self.mssim = MultiScaleSSIMMetric(
+            spatial_dims=self.spartial_dim, data_range=1.0, kernel_size=4
+        )
+        self.psnr = PSNRMetric(max_val=1.0, reduction="mean")
+        print("LPIPS/SSIM/MSSIM/PSNR models loaded successfully.")
 
         # Add FID metric if testing pretraining stage
         if self.mode == "pretrain":
@@ -200,11 +223,20 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             del self.encoder
             del self.decoder
             print("Deleted encoder and decoder models, maintaining only EMA models.")
+
+            self.fe = FeatureExtractor(encoder=self.ema_encoder)
+            self.fe = self.fe.float().to(self.device)
+            # Setup eval dict
+            self.eval_dict = get_eval_dictionary()
+            self.eval_dict["test_ddim"] = self.test_ddim_style
+            self.eval_dict["test_noise_level"] = self.test_noise_level
+
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
-        
+
         # Init array to store reconstruction result
-        self.recons_np = []
+        if self.use_xT_inferred:
+            self.recons_np = []
         self.recons_semantic_np = [] 
         self.recons_idx = []
         self.origins = []  # we dont need to store the origin, this is just to calculate histogram at on_test_epoch_end
@@ -214,6 +246,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             "results"
         )
         os.makedirs(self.result_path, exist_ok=True)
+        self.result_dict_path = os.path.join(self.result_path, "eval_dict.json")
 
     @torch.no_grad()
     def decode(self, z):
@@ -276,7 +309,13 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             raise ValueError(f"Invalid mode: {self.mode}")
 
         loss = output['prediction_loss']
-        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train_loss", 
+                 loss, 
+                 prog_bar=True, 
+                 on_step=True, 
+                 on_epoch=True, 
+                 sync_dist=True,
+                 batch_size=z0.shape[0])
         return loss
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
@@ -329,6 +368,28 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             z0 = batch["x_origin"]
             z0 = rearrange(z0, "b t c h w -> (b t) c h w")
 
+        if self.mode == "representation-learning":
+            x0 = z0
+            x_recon = self.gaussian_diffusion.representation_learning_ddim_sample(
+                ddim_style='ddim100',
+                encoder=self.ema_encoder if hasattr(self, 'ema_encoder') else self.encoder,
+                decoder=self.ema_decoder if hasattr(self, 'ema_decoder') else self.decoder,
+                x_0=x0,
+                x_T=torch.randn_like(z0),
+                disable_tqdm=True
+            )
+            x_recon = self.decode(x_recon)
+            ssim = self.ssim(x_recon, self.decode(z0))
+            loss = self.gaussian_diffusion.p_loss(x_recon, x0, loss_type="l2")
+            self.log_dict(
+                {"val_ssim": ssim.mean(),
+                 "val_loss": loss},
+                 prog_bar=True, 
+                 on_step=False,
+                 on_epoch=True,
+                 sync_dist=True
+            )
+
         # For visualization (only for batch_idx == 0 on global_rank == 0)
         if batch_idx == 0 and self.global_rank == 0:
             print("Generating image...")
@@ -341,12 +402,10 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                     x_T=torch.randn_like(z0),
                 )
             elif self.mode == "representation-learning":
-                # x0 = batch["image"]
-                x0 = batch["x_origin"]
-                x0 = rearrange(x0, "b t c h w -> (b t) c h w")
+                x0 = z0
                 # Use the EMA version (or the main encoder/decoder) for sampling
                 z_0 = self.gaussian_diffusion.representation_learning_ddim_sample(
-                    ddim_style='ddim50',
+                    ddim_style='ddim100',
                     encoder=self.ema_encoder if hasattr(self, 'ema_encoder') else self.encoder,
                     decoder=self.ema_decoder if hasattr(self, 'ema_decoder') else self.decoder,
                     x_0=x0,
@@ -354,63 +413,29 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                     disable_tqdm=True
                 )
 
-                # Log the original for comparison
-                self.tb_log_image_batch_2d(
-                    self.decode(x0),
-                    caption="origin"
-                )
-
             if z_0 is not None:
                 print("Logging image...")
                 if self.mode == "pretrain":
                     print("skip log img for pretrain")
-                #     imgs = z_0[:3, ...]  # [(B T) C H W]
-                #     self.tb_display_generation(step=self.global_step, tag="generated", images=imgs)
-                    # self.log_image_batch(
-                    #     self.decode(z_0[0:min(4, z_0.shape[0])]).cpu().numpy(),
-                    #     caption="generated"
-                    # )
+
                 elif self.mode == "representation-learning":
-                    # self.log_image_batch(
-                    #     self.decode(z_0).cpu().numpy(),
-                    #     caption="generated"
-                    # )
+                    # Log the original for comparison
+                    self.tb_log_image_batch_2d(
+                        self.decode(x0),
+                        caption="origin",
+                        job="val"
+                    )
                     self.tb_log_image_batch_2d(
                         self.decode(z_0),
-                        job = self.trainer.state.stage.value,
                         caption="generate",
-                        idx=batch_idx
+                        job="val"
                     )
                 else:
                     raise ValueError(f"Invalid mode: {self.mode}")
             else:
                 raise ValueError(f"Invalid mode: {self.mode}")
 
-        if self.mode == "representation-learning":
-            # x0 = batch["image"]
-            x0 = batch["x_origin"]
-            x0 = rearrange(x0, "b t c h w -> (b t) c h w")
-            zt = self.gaussian_diffusion.representation_learning_ddim_sample(
-                ddim_style='ddim100',
-                encoder=self.ema_encoder if hasattr(self, 'ema_encoder') else self.encoder,
-                decoder=self.ema_decoder if hasattr(self, 'ema_decoder') else self.decoder,
-                x_0=x0,
-                x_T=torch.randn_like(z0),
-                disable_tqdm=True
-            )
-            recon = self.decode(zt)
-            ssim = self.ssim(recon, self.decode(z0))
-            loss = self.gaussian_diffusion.p_loss(recon, x0, loss_type="l2")
-            self.log_dict(
-                {"val_ssim": ssim.mean(),
-                 "val_loss": loss},
-                 prog_bar=True, 
-                 on_step=False,
-                 on_epoch=True,
-                 sync_dist=True
-            )
-            # self.log("val_ssim", ssim.mean(), prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-            return ssim
+            # return ssim
 
     def test_step(self, batch, batch_idx):
         """
@@ -419,8 +444,16 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
         # z0 = batch["latent"]
         # z0 = z0 * self.scale_factor
         # x0 = batch["image"]
+
+        # subject metadata
+        pidx = batch["id"].item()
+        anomaly = batch["anomaly"].item()
+        anomaly_type = batch["anomaly_type"][0]
+        anomaly_gt_seg = batch["anomaly_gt_seg"]
+
         x0 = batch["x_origin"]
         x0 = rearrange(x0, "b t c h w -> (b t) c h w")
+        anomaly_gt_seg = rearrange(anomaly_gt_seg, "b t c h w -> (b t) c h w")
 
         if self.vae is not None: 
             z0 = batch["latent"]
@@ -482,30 +515,36 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
 
         elif self.mode == "representation-learning":
             if self.vae is None: 
-                print(f"Encoding the image...[batch_idx: {batch_idx}]")
-                x_T_inferred = self.gaussian_diffusion.representation_learning_ddim_encode(
-                    ddim_style=self.test_ddim_style,
-                    encoder=self.ema_encoder,
-                    decoder=self.ema_decoder,
-                    x_0=x0
-                )
-                print(f"Decoding with LDAE...[batch_idx: {batch_idx}]")
-                x0_hat = self.gaussian_diffusion.representation_learning_ddim_sample(
-                    ddim_style=self.test_ddim_style,
-                    encoder=self.ema_encoder,
-                    decoder=self.ema_decoder,
-                    x_0=x0,
-                    x_T=x_T_inferred,
-                    disable_tqdm=True
-                )
+                x0_hat = None
+                x0_semantic = None
+
+                if self.use_xT_inferred:
+                    print(f"Encoding the image...[batch_idx: {batch_idx}]")
+                    x_T_inferred = self.gaussian_diffusion.representation_learning_ddim_encode(
+                        ddim_style=self.test_ddim_style,
+                        encoder=self.ema_encoder,
+                        decoder=self.ema_decoder,
+                        x_0=x0
+                    )
+                    print(f"Decoding with LDAE...[batch_idx: {batch_idx}]")
+                    x0_hat = self.gaussian_diffusion.representation_learning_ddim_sample(
+                        ddim_style=self.test_ddim_style,
+                        encoder=self.ema_encoder,
+                        decoder=self.ema_decoder,
+                        x_0=x0,
+                        x_T=x_T_inferred,
+                        disable_tqdm=True
+                    )
 
                 print(f"Semantic sampling with LDAE...[batch_idx: {batch_idx}]")
+                x_T_noise = self.gaussian_diffusion.q_sample(x0, self.test_noise_level)
                 x0_semantic = self.gaussian_diffusion.representation_learning_ddim_sample(
                     ddim_style=self.test_ddim_style,
                     encoder=self.ema_encoder,
                     decoder=self.ema_decoder,
                     x_0=x0,
-                    x_T=torch.randn_like(x0),
+                    x_T=x_T_noise,
+                    start_t=self.test_noise_level,
                     disable_tqdm=True
                 )
             elif self.vae is not None: 
@@ -551,62 +590,65 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
 
             # Store the result
             x0_real_np = x0_real.cpu().numpy()  # [B, C, H, W]
-            x0_hat_np = x0_hat.cpu().numpy()  # [B, C, H, W]
             x0_semantic_np = x0_semantic.cpu().numpy()
+            if self.use_xT_inferred:
+                x0_hat_np = x0_hat.cpu().numpy()  # [B, C, H, W]
+            else:
+                x0_hat_np = None
+            self.ano_gts.append(anomaly_gt_seg.cpu().numpy())
             self.recons_idx.append(batch["id"].cpu().numpy())
             self.recons_np.append(x0_hat_np)
             self.recons_semantic_np.append(x0_semantic_np)
             self.origins.append(x0_real_np)
+
+            # Log infos to eval_dict
+            self.eval_dict["IDs"].append(pidx)
+            self.eval_dict["labelPerVol"].append(anomaly)
+            self.eval_dict["anomalyType"].append(anomaly_type)
 
             # if batch_idx < 20:  # only use for WandB because we can store multiple images inside 1 tag
             if batch_idx % self.log_img_every_epoch == 0: 
                 pidx = batch["id"].item()
                 save_idx = batch_idx // self.log_img_every_epoch  # so that every test run will store img with the same save_idx (easier to browse)
                 if self.spartial_dim == 3: 
-                    self.log_image_batch(x0_semantic.cpu().numpy(), caption="semantic")
-                    self.log_image_batch(x0_hat.cpu().numpy(), caption="inferred")
-                    self.log_image_batch(x0_recon.cpu().numpy(), caption="reconstructed")
-                    self.log_image_batch(x0_real.cpu().numpy(), caption="real")
+                    pass  # 3D MRI scan
+
                 elif self.spartial_dim == 2: 
                     job = self.trainer.state.stage.value
-                    self.tb_log_image_batch_2d(x_T_inferred, job=job, caption="xT_inferred", idx=pidx)
                     self.tb_log_image_batch_2d(x0_semantic, job=job, caption="recon_semantic", idx=pidx)
-                    self.tb_log_image_batch_2d(x0_hat, job=job, caption="recon_inferred", idx=pidx)
                     self.tb_log_image_batch_2d(x0_real, job=job, caption="real", idx=pidx)
                     if self.vae: 
                         self.tb_log_image_batch_2d(x0_recon, job=job, caption="recon_vaekl", idx=pidx)
-                    
+                    if self.use_xT_inferred:
+                        self.tb_log_image_batch_2d(x_T_inferred, job=job, caption="xT_inferred", idx=pidx)
+                        self.tb_log_image_batch_2d(x0_hat, job=job, caption="recon_inferred", idx=pidx)
+
                     # Log plot of comparison
-                    self.tb_log_plot_comparison_2d(idx=pidx, x_origin=x0_real_np, x_recons=x0_hat_np)
+                    tb_log_plot_heatmap(
+                        self,
+                        idx=save_idx,
+                        caption="pixel_score_semantic",
+                        x_origin=x0_real,
+                        x_recons=x0_semantic,
+                    )
 
+                    if self.use_xT_inferred:
+                        tb_log_plot_comparison_2d(
+                            self,
+                            idx=save_idx, 
+                            caption="comparison",
+                            x_origin=x0_real,
+                            x_recons=x0_hat, 
+                            x_recons_semantic=x0_semantic,
+                        )
 
-            # Compute reconstruction metrics starting from the semantic space
-            ldae_mse_semantic_original = torch.nn.functional.mse_loss(x0_semantic, x0_real)
-            ldae_ssim_semantic_original = self.ssim(x0_semantic, x0_real)
-            ldae_mssim_semantic_original = self.mssim(x0_semantic, x0_real)
-            ldae_lpips_semantic_original = self.lpips(x0_semantic, x0_real)
-            self.log("test_mse/ldae_semantic_original", ldae_mse_semantic_original.mean(), prog_bar=True, on_step=True,
-                     on_epoch=True, sync_dist=True)
-            self.log("test_ssim/ldae_semantic_original", ldae_ssim_semantic_original.mean(), prog_bar=True,
-                     on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_mssim/ldae_semantic_original", ldae_mssim_semantic_original.mean(), prog_bar=True,
-                     on_step=True, on_epoch=True, sync_dist=True)
-            self.log("test_lpips/ldae_semantic_original", ldae_lpips_semantic_original.mean(), prog_bar=True,
-                     on_step=True, on_epoch=True, sync_dist=True)
-
-            # Compute reconstruction metrics starting from semantic + z_T inferred
-            ldae_mse_original = torch.nn.functional.mse_loss(x0_hat, x0_real)
-            ldae_ssim_original = self.ssim(x0_hat, x0_real)
-            ldea_mssim_original = self.mssim(x0_hat, x0_real)
-            ldae_lpips_original = self.lpips(x0_hat, x0_real)
-            self.log("test_mse/ldae_original", ldae_mse_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
-                     sync_dist=True)
-            self.log("test_ssim/ldae_original", ldae_ssim_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
-                     sync_dist=True)
-            self.log("test_mssim/ldae_original", ldea_mssim_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
-                     sync_dist=True)
-            self.log("test_lpips/ldae_original", ldae_lpips_original.mean(), prog_bar=True, on_step=True, on_epoch=True,
-                     sync_dist=True)
+                        tb_log_plot_heatmap(
+                            self,
+                            idx=save_idx,
+                            caption="pixel_score_infer",
+                            x_origin=x0_real,
+                            x_recons=x0_hat,
+                        )
 
             # Compute reconstruction metrics of the autoencoder
             if self.vae: 
@@ -620,7 +662,6 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                 self.log("test_lpips_aekl", aekl_lpips.mean(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
-        
 
     def on_test_epoch_end(self):
         if self.mode == "pretrain":
@@ -630,7 +671,7 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
             self.log("test_fid_original", fid_original, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
             self.log("test_fid_reconstructed", fid_reconstructed, prog_bar=True, on_step=False, on_epoch=True,
                      sync_dist=True)
-            
+
         # Collect reconstruction result and save
         def save_np(np_path, np_name, x):
             """
@@ -641,34 +682,42 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
                 x
             )
 
-        self.recons_np = np.stack(self.recons_np)  # [N, B, C, H, W]
         self.recons_semantic_np = np.stack(self.recons_semantic_np)  # [N, B, C, H, W]
         self.recons_idx = np.stack(self.recons_idx)
         self.origins = np.stack(self.origins)  # [N, B, C, H, W])
+        self.ano_gts = np.stack(self.ano_gts)
 
-        save_np(self.result_path, "recons", self.recons_np)
         save_np(self.result_path, "recons_semantic", self.recons_semantic_np)
         save_np(self.result_path, "recons_idx", self.recons_idx)
-
+        if self.use_xT_inferred:
+            self.recons_np = np.stack(self.recons_np)  # [N, B, C, H, W]
+            save_np(self.result_path, "recons", self.recons_np)
         print("Save reconstruction numpy.")
-        
-        # Plot histogram of L1 error pixel_wise
-        from src.utils import plot_error_histogram
-        l1_errors = np.abs(self.origins - self.recons_np)
 
-        # # log to TB histogram
-        # flat_errors = l1_errors.reshape(-1)  # flatten all dims to 1D
-        # self.logger.experiment.add_histogram(
-        #     "test/pixel_wise_l1_loss",
-        #     flat_errors,
-        #     global_step=self.global_step
-        # )
+        # Calculate test metrics and save eval_dict
+        self.eval_dict = test_metrics(
+            self,
+            eval_dict=self.eval_dict,
+            x_orgs=self.origins,
+            x_recons=self.recons_semantic_np,
+            x_ano_gts=self.ano_gts,
+            recon_type="semantic",
+            save_dict=True,
+            save_path=self.result_dict_path,
+        )
 
-        # log custome L1 histogram to Tensorboard
-        l1_errors = rearrange(l1_errors, "n b c h w -> b (n c h w)")  # B = 10 = number of timeframes. 
-        fig = plot_error_histogram(l1_errors)
-        self.logger.experiment.add_figure("test_figures/l1_histogram", fig, self.global_step)
-            
+        if self.use_xT_inferred:
+            self.eval_dict = test_metrics(
+                self,
+                eval_dict=self.eval_dict,
+                x_orgs=self.origins,
+                x_recons=self.recons_np,
+                x_ano_gts=self.ano_gts,
+                recon_type="infer",
+                save_dict=True,
+                save_path=self.result_dict_path,
+            )
+
     def tb_display_generation(self, step, images, tag="Generated"):
         """
         Display generation result in TensorBoard during training
@@ -709,126 +758,16 @@ class LatentDiffusionAutoencoders2D(L.LightningModule):
         # Truncate to desired number of slices
         if B > max_slices:
             images = images[:max_slices]
-    
+
         grid = torchvision.utils.make_grid(images, nrow=slices_per_patient, normalize=True, scale_each=True)
         if job == "fit":
             tag = f"{job}_ep{self.current_epoch:03d}/{caption}"
-        elif job in ["validate", "test"]:
+        elif job == "test":
             # tag = f"{job}_{idx}/{caption}"
             tag = f"test_{idx:03}/{caption}"
+        elif job == "val":
+            tag = f"val_ep{self.current_epoch:03d}/{caption}"
         writer.add_image(tag, grid, self.global_step)
-
-    def tb_log_plot_comparison_2d(self, idx, x_origin, x_recons):
-        """
-        Log plot of comparison to TensorBoard. 
-        Plot will have 3 rows and 1 column for color bar cmap. 
-            - Original images. list[np.ndarray]
-            - Reconstruction images (can be x_inferred or x_hat)
-            - Error
-        All images need to be in np.ndarray format [B, H, W]. B = 10 for StarmenDataset. 
-        """
-        writer = self.logger.experiment    
-
-        imgs = [
-            x_origin.squeeze(),
-            x_recons.squeeze(),
-            np.abs(x_origin - x_recons).squeeze(),
-        ]
-
-        labels = [
-            "Origin",
-            "Reconstruction",
-            "Error"
-        ]
-
-        is_errors = [False, False, True]
-        opts = {
-            "title": "Reconsuction error (inferred x)",
-            "base_size": 1.2
-            }
-
-        fig = plot_comparison_starmen(imgs, labels, is_errors, opt=opts)
-        writer.add_figure(f"test_{idx}/comparison", fig, self.global_step)
-
-    # def log_image(self, recon, caption="generated"):
-    #     """
-    #     Helper for logging 3D volume slices to Weights & Biases.
-    #     """
-    #     images_recon = [
-    #         recon[:, :, recon.shape[2] // 2],
-    #         recon[:, recon.shape[1] // 2, :],
-    #         recon[recon.shape[0] // 2, :, :]
-    #     ]
-    #     captions_recon = [
-    #         f"Center axial {caption}",
-    #         f"Center coronal {caption}",
-    #         f"Center sagittal {caption}"
-    #     ]
-
-    #     # Log each image separately using Wandb
-    #     wandb_logger = self.logger.experiment
-    #     for i, (img_recon, cap_recon) in enumerate(zip(images_recon, captions_recon)):
-    #         wandb_logger.log({
-    #             f"val_{caption}_slice_{i}": wandb.Image(img_recon, caption=cap_recon),
-    #         })
-
-    # def log_image_batch(self, recons, caption="generated"):
-    #     """
-    #     Log the center slices (axial, coronal, and sagittal) for an entire batch
-    #     of 3D volumes to Weights & Biases.
-
-    #     Args:
-    #         recons (np.ndarray or torch.Tensor): A 4D array of shape [B, H, W, D].
-    #         caption (str): Optional string to append to logging captions.
-    #     """
-    #     # If you're using PyTorch Tensors, you may want to convert to CPU & numpy:
-    #     # recons = recons.detach().cpu().numpy()
-
-    #     # Unpack shapes
-    #     B, C, H, W, D = recons.shape
-
-    #     # Grab center slices for each item in the batch
-    #     # Axial slice is the middle slice along depth D
-    #     axial_slices = recons[:, 0, :, :, D // 2]  # shape [B, H, W]
-
-    #     # Coronal slice is the middle slice along width W
-    #     # (note: shape [B, H, D])
-    #     coronal_slices = recons[:, 0, :, W // 2, :]
-
-    #     # Sagittal slice is the middle slice along height H
-    #     # (note: shape [B, W, D])
-    #     sagittal_slices = recons[:, 0, H // 2, :, :]
-
-    #     # Prepare logger
-    #     wandb_logger = self.logger.experiment
-
-    #     # Helper to turn a batch of 2D slices into a list of wandb.Images
-    #     def slices_to_wandb_images(slices_2d, view_name):
-    #         """
-    #         slices_2d is a 3D array of shape [B, height, width] for that particular view.
-    #         We'll make a list of wandb.Image objects, one per batch item.
-    #         """
-    #         images = []
-    #         for idx in range(B):
-    #             # Each slice is a 2D array: [height, width]
-    #             img_2d = slices_2d[idx]
-    #             # Convert to wandb.Image, optionally applying a caption
-    #             images.append(
-    #                 wandb.Image(img_2d, caption=f"{caption} {view_name}, batch idx {idx}")
-    #             )
-    #         return images
-
-    #     # Convert the slices for each view into a list of wandb.Images
-    #     axial_wandb_images = slices_to_wandb_images(axial_slices, "axial")
-    #     coronal_wandb_images = slices_to_wandb_images(coronal_slices, "coronal")
-    #     sagittal_wandb_images = slices_to_wandb_images(sagittal_slices, "sagittal")
-
-    #     # Finally, log them to W&B. Each key will appear as a gallery of images in the UI.
-    #     wandb_logger.log({
-    #         f"val_{caption}_axial": axial_wandb_images,
-    #         f"val_{caption}_coronal": coronal_wandb_images,
-    #         f"val_{caption}_sagittal": sagittal_wandb_images,
-    #     })
 
     def configure_optimizers(self):
         """

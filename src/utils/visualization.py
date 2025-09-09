@@ -92,6 +92,7 @@ def plot_comparison_starmen(
     imgs, 
     labels, 
     is_errors=None, 
+    cmaps=None, 
     save=False, 
     save_path=None, 
     show=False, 
@@ -113,6 +114,9 @@ def plot_comparison_starmen(
     if is_errors is None:
         is_errors = [False] * len(imgs)
         is_errors[-1] = True
+    
+    if len(is_errors) > len(imgs):
+        is_errors = is_errors[:len(imgs)]
 
     if opt is None:
         opt = {}
@@ -125,6 +129,9 @@ def plot_comparison_starmen(
     num_slices = len(imgs[0])
     ncols = 1 * num_slices
     diff_mappable = None
+
+    if cmaps is None:
+        cmaps = ["gray"] * len(imgs)
 
     # Adjust figure size and create a GridSpec with an extra column for the colorbar
     base_size = opt.get("base_size", 2.5)
@@ -170,14 +177,14 @@ def plot_comparison_starmen(
             ax = fig.add_subplot(gs[row_idx, col_idx])
 
             img = row_imgs[i]
-            cmap = "jet" if is_errors[row_idx] else "gray"
+            cmap = "jet" if is_errors[row_idx] else cmaps[row_idx]
 
             # Store the mappable for the error row
             if is_errors[row_idx]:
                 im = ax.imshow(img, cmap=cmap, **imshow_kwargs)
                 diff_mappable = im
             else:
-                im = ax.imshow(img, cmap="gray")
+                im = ax.imshow(img, cmap=cmap)
 
             ax.axis("off")
             ax.set_aspect("equal", adjustable="box")
@@ -643,3 +650,362 @@ def get_slices(volume, num_slices=3, total_slices_per_plane=None, offset=None):
     coronal = [(volume[:, i, :], i) for i in idxs[1]]
     sagittal = [(volume[i, :, :], i) for i in idxs[0]]
     return axial, coronal, sagittal
+
+def plot_fam_error_histogram(x, xhat, ano_gt, ano_map, f_d, i_d, heatmap_v):
+    """
+    Plot the effect of FAM on error histogram of pixel distance and feature distance.
+    It shows that FAM stretchs out the error within healthy region and anomalous region. 
+    Args: 
+        x, xhat, ano_gt, ano_map, f_d and i_d: 1 sample (C, H, W). 
+    """
+    import matplotlib.gridspec as gridspec
+    fig = plt.figure(figsize=(10, 8))
+    gs = gridspec.GridSpec(3, 4, figure=fig, wspace=0.05, hspace=0.3, width_ratios=[1,1,1,1])
+
+    # Check for anomaly:
+    if ano_gt is not None: 
+        if torch.all(ano_gt == 0.):
+            ano_gt = None
+
+    # Turn off all axes by default
+    axes = [[fig.add_subplot(gs[i, j]) for j in range(4)] for i in range(3)]
+    for row in axes:
+        for ax in row:
+            ax.axis("off")
+
+    # Plot original image
+    ax = axes[0][0]
+    ax.imshow(x.squeeze(), cmap="gray")
+    ax.set_title("origin")
+
+    # Plot ground truth anomaly
+    if ano_gt is not None and not torch.all(ano_gt == 0.):
+        ano_gt = ano_gt.squeeze()
+        ax = axes[0][3]
+        ax.imshow(ano_gt, cmap="gray")
+        ax.set_title("annotation")
+
+    # Reconstruction xT_infer
+    ax = axes[1][0]
+    ax.imshow(xhat.squeeze(), cmap="gray")
+    ax.set_title("reconstruction")
+    ax.set_ylabel("xT_infer")
+
+    # Pixel distance
+    ax = axes[1][1]
+    ax.imshow(i_d.squeeze(), cmap="jet")
+    ax.set_title("pixel distance")
+
+    # Feature distance
+    ax = axes[1][2]
+    ax.imshow(f_d.squeeze(), cmap="jet")
+    ax.set_title("feature distance")
+    
+    # Anomaly map
+    ax = axes[1][3]
+    ax.imshow(ano_map.squeeze(), cmap="jet")
+    ax.set_title(f"anomaly score v={heatmap_v}")
+
+    # Histogram: pixel density between x and xhat
+    ax = axes[2][0]
+    # ax.hist(x.squeeze().flatten(), bins=30, alpha=0.6, label="input", density=True, histtype="step")
+    # ax.hist(xhat.squeeze().flatten(), bins=30, alpha=0.6, label="recons", density=True, histtype="step")
+    xs = [x.squeeze().flatten(), xhat.squeeze().flatten()]
+    labels = ["input", "recons"]
+    ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="step")
+    ax.set_title("pixel density")
+    ax.legend()
+
+    # Histogram: pixel distance
+    ax = axes[2][1]
+    if ano_gt is not None:
+        i_d_ano = i_d.squeeze()[ano_gt > 0]
+        i_d_ht = i_d.squeeze()[ano_gt == 0]
+
+        # ax.hist(i_d_ano, bins=30, alpha=0.6, label="anomaly", density=True)
+        # ax.hist(i_d_ht, bins=30, alpha=0.6, label="healthy", density=True)
+
+        xs = [i_d_ht, i_d_ano]
+        labels = ["healthy", "anomaly"]
+        ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="stepfilled")
+    else: 
+        ax.hist(i_d.squeeze().flatten(), bins=30, alpha=0.6, label="healthy", density=True, histtype="stepfilled")
+    ax.legend()
+
+
+    # Histogram: feature distance
+    ax = axes[2][2]
+    if ano_gt is not None:
+        f_d_ano = f_d.squeeze()[ano_gt > 0]
+        f_d_ht = f_d.squeeze()[ano_gt == 0]
+        # ax.hist(f_d_ano, bins=30, alpha=0.6, label="anomaly", density=True)
+        # ax.hist(f_d_ht, bins=30, alpha=0.6, label="healthy", density=True)
+        xs = [f_d_ht, f_d_ano]
+        labels = ["healthy", "anomaly"]
+        ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="stepfilled")
+    else: 
+        ax.hist(f_d.squeeze().flatten(), bins=30, alpha=0.6, label="healthy", density=True, histtype="stepfilled")
+    ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+
+    # Histogram: anomaly map
+    ax = axes[2][3]
+    if ano_gt is not None:
+        ano_map_ano = ano_map.squeeze()[ano_gt > 0]
+        ano_map_ht = ano_map.squeeze()[ano_gt == 0]
+        # ax.hist(ano_map_ano, bins=30, alpha=0.6, label="anomaly", density=True)
+        # ax.hist(ano_map_ht, bins=30, alpha=0.6, label="healthy", density=True)
+        xs = [ano_map_ht, ano_map_ano]
+        labels = ["healthy", "anomaly"]
+        ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="stepfilled")
+    else: 
+        ax.hist(ano_map.squeeze().flatten(), bins=30, alpha=0.6, label="healthy", density=True, histtype="stepfilled")
+    ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+
+    # Customize histogram axes in third row
+    for ax in [axes[2][0], axes[2][1], axes[2][2], axes[2][3]]:
+        ax.axis("on")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(True)
+        ax.tick_params(
+            axis='both',
+            which='both',
+            bottom=True,
+            top=False,
+            left=False,
+            right=False,
+            labelbottom=True,
+            labelleft=False
+        )
+    # plt.tight_layout()
+    # plt.show()
+    return fig
+
+
+
+"""
+Plot methods to log in Tensorboard to be used in Lightning models
+"""
+
+def tb_log_image_batch_2d(self, images, job="fit", caption="generate", idx=0):
+    import torchvision
+
+    """
+    Log the guided generated images (2D normal img) to TensorBoard
+
+    Args: 
+        job: str, type of job in ["fit", "validate", "test" ]. This is used to created Tensorboard tag. 
+        images: Tensor images [B, C, H, W]. We use torchvision so it needs to be tensor - not numpy. 
+        caption: Used to generate Tensorboard tags, for example: val_ep010_generate, val_ep050_origin, etc...
+    """
+
+    writer = self.logger.experiment
+
+    B = images.shape[0]
+    max_patient = 5  # log maximum 3 patients
+    slices_per_patient = 10
+    max_slices = max_patient * slices_per_patient
+    # Truncate to desired number of slices
+    if B > max_slices:
+        images = images[:max_slices]
+
+    grid = torchvision.utils.make_grid(
+        images, nrow=slices_per_patient, normalize=True, scale_each=True
+    )
+    if job == "fit":
+        tag = f"{job}_ep{self.current_epoch:03d}/{caption}"
+    elif job in ["validate", "test"]:
+        # tag = f"{job}_{idx}/{caption}"
+        tag = f"test_{idx:03}/{caption}"
+    writer.add_image(tag, grid, self.global_step)
+
+def tb_log_plot_comparison_2d(
+    self,
+    idx,
+    caption,
+    x_origin,
+    x_recons,
+    x_recons_semantic,
+):
+    """
+    Log plot of comparison to TensorBoard.
+    Plot will have 3 rows and 1 column for color bar cmap.
+        - Original images. list[np.ndarray]
+        - Reconstruction images (can be x_inferred or x_hat)
+        - Error
+    All images need to be in np.ndarray format [B, H, W]. B = 10 for StarmenDataset.
+    """
+    writer = self.logger.experiment
+
+    imgs = [
+        x_origin.detach().cpu().squeeze(),
+        x_recons.detach().cpu().squeeze(),
+        torch.abs(x_origin - x_recons).detach().cpu().squeeze(),
+        x_recons_semantic.detach().cpu().squeeze(),
+        torch.abs(x_origin - x_recons_semantic).detach().cpu().squeeze(),
+    ]
+
+    labels = [
+        "origin",
+        "recons_infer",
+        "error_infer",
+        "recons_semantic",
+        "error_semantic",
+    ]
+
+    is_errors = [False, False, True, False, True]
+
+    opts = {"title": f"Reconsuction errors", "base_size": 1.2}
+
+    fig = plot_comparison_starmen(imgs, labels, is_errors, opt=opts, same_cbar=True)
+    writer.add_figure(f"test_{idx:03}/{caption}", fig, self.global_step)
+
+def tb_log_plot_heatmap(
+    self,
+    idx,
+    caption,
+    x_origin,
+    x_recons,
+):
+
+    from src.ldae.utils.anomaly_map import heat_map
+
+    writer = self.logger.experiment
+
+    ano_map, f_d, i_d = heat_map(
+        x_recons, x_origin, self.fe, v=self.heatmap_v, fe_layers=self.fe_layers
+    )
+
+    imgs = [
+        x_origin.detach().cpu().squeeze(),
+        x_recons.detach().cpu().squeeze(),
+        f_d.detach().cpu().squeeze(),
+        i_d.detach().cpu().squeeze(),
+        ano_map.detach().cpu().squeeze(),
+    ]
+
+    labels = ["origin", "recons", "f_d", "i_d", "ano_score_map"]
+
+    title = f"Anomaly score map - v={self.heatmap_v}"
+    opt = {"title": title}
+
+    fig = plot_comparison_starmen(
+        imgs,
+        labels,
+        is_errors=[False, False, True, True, True],
+        opt=opt,
+        same_cbar=False,
+        display_cbar=True,
+    )
+    writer.add_figure(f"test_{idx:03}/{caption}", fig, self.global_step)
+
+def tb_log_plot_example_histogram_heat_map(self, x, xhat, ano_gt):
+
+    import matplotlib.gridspec as gridspec
+    import matplotlib.pyplot as plt
+
+    from src.ldae.utils.anomaly_map import heat_map
+
+
+    fig = plt.figure(figsize=(10, 8))
+    gs = gridspec.GridSpec(
+        3, 4, figure=fig, wspace=0.05, hspace=0.3, width_ratios=[1, 1, 1, 1]
+    )
+
+    ano_map, f_d, i_d = heat_map(
+        x, xhat, self.fe, v=self.heatmap_v, fe_layers=self.fe_layers
+    )
+
+    # Turn off all axes by default
+    axes = [[fig.add_subplot(gs[i, j]) for j in range(4)] for i in range(3)]
+    for row in axes:
+        for ax in row:
+            ax.axis("off")
+
+    # Plot original image
+    ax = axes[0][0]
+    ax.imshow(x, cmap="gray")
+    ax.set_title("origin")
+
+    # Plot ground truth anomaly
+    ax = axes[0][3]
+    ax.imshow(ano_gt, cmap="gray")
+    ax.set_title("annotation")
+
+    # Reconstruction xT_infer
+    ax = axes[1][0]
+    ax.imshow(xhat, cmap="gray")
+    ax.set_title("reconstruction")
+    ax.set_ylabel("xT_infer")
+
+    # Pixel distance
+    ax = axes[1][1]
+    ax.imshow(i_d.squeeze(), cmap="inferno")
+    ax.set_title("pixel distance")
+
+    # Feature distance
+    ax = axes[1][2]
+    ax.imshow(f_d.squeeze(), cmap="inferno")
+    ax.set_title("feature distance")
+
+    # Anomaly map
+    ax = axes[1][3]
+    ax.imshow(ano_map.squeeze(), cmap="inferno")
+    ax.set_title(f"anomaly score v={self.heatmap_v}")
+
+    # Histogram: pixel density between x and xhat
+    ax = axes[2][0]
+    xs = [x.squeeze().flatten(), xhat.squeeze().flatten()]
+    labels = ["input", "recons"]
+    ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="step")
+    ax.set_title("pixel density")
+
+    # Histogram: pixel distance
+    ax = axes[2][1]
+    i_d_ano = i_d.squeeze()[ano_gt > 0]
+    i_d_ht = i_d.squeeze()[ano_gt == 0]
+
+    xs = [i_d_ano, i_d_ht]
+    labels = ["anomaly", "healthy"]
+    ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="stepfilled")
+    ax.legend()
+
+    # Histogram: feature distance
+    ax = axes[2][2]
+    f_d_ano = f_d.squeeze()[ano_gt > 0]
+    f_d_ht = f_d.squeeze()[ano_gt == 0]
+    xs = [f_d_ano, f_d_ht]
+    labels = ["anomaly", "healthy"]
+    ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="stepfilled")
+    ax.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
+
+    # Histogram: anomaly map
+    ax = axes[2][3]
+    ano_map_ano = ano_map.squeeze()[ano_gt > 0]
+    ano_map_ht = ano_map.squeeze()[ano_gt == 0]
+    xs = [ano_map_ano, ano_map_ht]
+    labels = ["anomaly", "healthy"]
+    ax.hist(xs, bins=30, alpha=0.6, label=labels, density=True, histtype="stepfilled")
+    ax.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
+
+    # Customize histogram axes in third row
+    for ax in [axes[2][0], axes[2][1], axes[2][2], axes[2][3]]:
+        ax.axis("on")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["bottom"].set_visible(True)
+        ax.tick_params(
+            axis="both",
+            which="both",
+            bottom=True,
+            top=False,
+            left=False,
+            right=False,
+            labelbottom=True,
+            labelleft=False,
+        )
+
+    # plt.tight_layout()
+    plt.show()

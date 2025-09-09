@@ -64,7 +64,7 @@ def cli_main():
         datamodule_class=StarmenDataModule,
         parser_kwargs={"parser_mode": "omegaconf"},
         save_config_kwargs={"overwrite": True},
-    )    
+    ) 
     return cli
 
 

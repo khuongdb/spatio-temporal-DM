@@ -424,7 +424,7 @@ def test_step_metrics(
         eval_dict["SpecificityPerVol"].append(TN / (TN + FP + 0.0000001))
 
 
-def test_metrics(
+def test_metrics_one_type(
     self, 
     x_orgs, 
     x_recons, 
@@ -637,4 +637,52 @@ def test_metrics(
             json.dump(eval_dict, f)
         print(f"Save eval_dict to {save_path}")
 
+    return eval_dict
+
+def test_metrics(
+    self, 
+    x_orgs, 
+    x_recons, 
+    x_ano_gts=None,
+    eval_dict=None, 
+    recon_type="semantic", 
+    save_dict=True, 
+    save_path=None,
+    is_step=False
+):
+
+    if save_path is None:
+        save_path = self.result_dict_path
+
+    if eval_dict is None:
+        eval_dict = self.eval_dict
+
+    # check the number of anomaly/healthy type
+    ano_types = set(eval_dict["anomalyType"])
+    if len(ano_types) > 1: 
+        for i, ano in enumerate(ano_types):
+            # calculate eval_dict for each anomaly_type
+            ano_idx = [i for i, x in enumerate(eval_dict["anomalyType"]) if x == ano]
+            if len(ano_idx) == 0:
+                continue
+
+            eval_dict = test_metrics_one_type(self,
+                                              x_orgs=x_orgs[ano_idx],
+                                              x_recons=x_recons[ano_idx],
+                                              x_ano_gts=x_ano_gts[ano_idx],
+                                              eval_dict=eval_dict,
+                                              recon_type=f"{recon_type}_{ano}",
+                                              save_dict=False,
+                                              )
+    
+    # Calculate overall metrics
+    eval_dict = test_metrics_one_type(self, 
+                                    x_orgs=x_orgs,
+                                    x_recons=x_recons,
+                                    x_ano_gts=x_ano_gts,
+                                    eval_dict=eval_dict,
+                                    recon_type=recon_type,
+                                    save_dict=save_dict,
+                                    save_path=save_path,
+                                    )
     return eval_dict

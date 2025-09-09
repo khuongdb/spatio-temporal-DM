@@ -3,3 +3,4 @@ from .slice_distributed import SliceDistributed
 from .positional_encoding import PositionalEncoding
 from .ocsvm import OCSVM, OCSVMguidedAutoencoder
 from .transformers import TransformerEncoder, TransformerEncoderLayer
+from .anomaly_detection import LAFM, FAM

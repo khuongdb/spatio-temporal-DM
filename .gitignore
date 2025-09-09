@@ -179,6 +179,7 @@ cython_debug/
 
 # data folder
 data/
+/data
 
 
 # output folder

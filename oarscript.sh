@@ -1,5 +1,5 @@
 #!/bin/bash 
-#OAR -n tadm_test_ddim100
+#OAR -n test_noise600
 #OAR -q besteffort 
 #OAR -p gpu
 ##OAR -p cluster='graffiti'
@@ -51,13 +51,22 @@ source .venv/bin/activate
 #         --checkpoint="workdir/diffae_resnet18_ep1000/ckpt/best.pth" \
 #         --datasplit="train"
 
+###
+# LDAE Model
+###
+
+# # Train LDAE - representation learning
+# python3 main_diffae.py --config configs/starmen_ldae.yaml fit
+
 
 # # DiffAE - Starmen with Pytorch CLI
 # python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml fit
 
 # # DiffAE Inference
-# python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml test \
-#                         --data.test_ds.split test
+python3 main_diffae.py --config configs/starmen_diffae.yaml test \
+                        --data.test_ds.split test_combine \
+                        --model.init_args.test_noise_level 600 \
+                        --model.init_args.log_img_every_epoch 50
 
 # python3 main_diffae.py --config configs/starmen_diffae_dim4.yaml test \
 #                         --data.test_ds.split growing_circle20
@@ -79,12 +88,12 @@ source .venv/bin/activate
 # # Train TADM 
 # python3 main_diffae.py --config configs/starmen_tadm.yaml fit
 
-# Test TADM
-python3 main_diffae.py --config configs/starmen_tadm.yaml test \
-                        --data.test_ds.split growing_circle20
+# # Test TADM
+# python3 main_diffae.py --config configs/starmen_tadm.yaml test \
+#                         --data.test_ds.split growing_circle20
 
-python3 main_diffae.py --config configs/starmen_tadm.yaml test \
-                        --data.test_ds.split darker_circle20
+# python3 main_diffae.py --config configs/starmen_tadm.yaml test \
+#                         --data.test_ds.split darker_circle20
 
-python3 main_diffae.py --config configs/starmen_tadm.yaml test \
-                        --data.test_ds.split darker_line20
+# python3 main_diffae.py --config configs/starmen_tadm.yaml test \
+#                         --data.test_ds.split darker_line20

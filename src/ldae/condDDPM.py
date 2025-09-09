@@ -28,7 +28,6 @@ import numpy as np
 import pandas as pd
 import torch
 from einops import rearrange
-from generative.losses import PerceptualLoss
 from generative.metrics import FIDMetric
 from generative.networks.nets import AutoencoderKL
 from leaspy.algo import AlgorithmSettings
@@ -40,13 +39,9 @@ from monai.losses import PerceptualLoss
 from monai.metrics.regression import MultiScaleSSIMMetric, PSNRMetric, SSIMMetric
 from src.ldae.diffusion import GaussianDiffusion, LongitudinalDiffusion
 from src.ldae.nets import (
-    AttentionSemanticEncoder,
     CondUNet,
     FeatureExtractor,
     SemanticEncoder,
-    SemanticEncoderAgeCond,
-    ShiftUNet,
-    UNet,
 )
 
 from src.utils.metrics import get_eval_dictionary, test_metrics
@@ -73,6 +68,7 @@ class CondDDPM(L.LightningModule):
         log_img_every_epoch: int = 10,
         test_ddim_style: str = "ddim100",
         test_noise_level: int = 250,
+        use_xT_inferred: bool = False,
         heatmap_v: float = 6.0,
         fe_layers: list = ["layer1", "layer2", "layer3"],
     ):
@@ -109,6 +105,7 @@ class CondDDPM(L.LightningModule):
         self.ema_update_after_step = ema_update_after_step
         self.test_ddim_style = test_ddim_style
         self.test_noise_level = test_noise_level
+        self.use_xT_inferred = use_xT_inferred
         self.heatmap_v = heatmap_v
         self.fe_layers = fe_layers
         self.leaspy_lambda = leaspy_lambda
@@ -313,7 +310,8 @@ class CondDDPM(L.LightningModule):
         )  # we dont need to store the origin, this is just to calculate histogram at on_test_epoch_end
         self.ano_gts = []
         self.result_path = os.path.join(
-            self.trainer.logger.save_dir, self.trainer.logger.name, "results"
+            self.trainer.logger.save_dir, 
+            self.trainer.logger.name, "results"
         )
         os.makedirs(self.result_path, exist_ok=True)
         self.result_dict_path = os.path.join(self.result_path, "eval_dict.json")
@@ -644,42 +642,57 @@ class CondDDPM(L.LightningModule):
 
         elif self.mode == "representation-learning":
             if self.vae is None:
-                print(f"Encoding the image...[batch_idx: {batch_idx}]")
-                x_T_inferred = (
-                    self.gaussian_diffusion.representation_learning_diffae_encode(
-                        ddim_style=self.test_ddim_style,
-                        encoder=self.ema_encoder,
-                        unet=self.ema_decoder,
-                        x_0=x0,
-                        noise_level=self.test_noise_level,
-                        disable_tqdm=True,
-                    )
-                )
-                print(f"Decoding from stochastic subcode...[batch_idx: {batch_idx}]")
-                x0_hat = self.gaussian_diffusion.representation_learning_diffae_sample(
-                    ddim_style=self.test_ddim_style,
-                    encoder=self.ema_encoder,
-                    unet=self.ema_decoder,
-                    x_0=x0,
-                    x_T=x_T_inferred,
-                    start_t=self.test_noise_level,
-                    disable_tqdm=True,
-                )
+                x0_hat = None
+                x0_semantic = None
 
-                print(f"Semantic sampling with LDAE...[batch_idx: {batch_idx}]")
-                x_T_noise = self.gaussian_diffusion.q_sample(x0, self.test_noise_level)
-                x0_semantic = (
-                    self.gaussian_diffusion.representation_learning_diffae_sample(
+                if self.use_xT_inferred:
+                    print(f"Encoding the image...[batch_idx: {batch_idx}]")
+                    x_T_inferred = (
+                        self.gaussian_diffusion.representation_learning_diffae_encode(
+                            ddim_style=self.test_ddim_style,
+                            encoder=self.ema_encoder,
+                            unet=self.ema_decoder,
+                            x_0=x0,
+                            noise_level=self.test_noise_level,
+                            disable_tqdm=True,
+                        )
+                    )
+                    print(f"Decoding from stochastic subcode...[batch_idx: {batch_idx}]")
+                    x0_hat = self.gaussian_diffusion.representation_learning_diffae_sample(
                         ddim_style=self.test_ddim_style,
                         encoder=self.ema_encoder,
                         unet=self.ema_decoder,
                         x_0=x0,
-                        x_T=x_T_noise,
+                        x_T=x_T_inferred,
                         start_t=self.test_noise_level,
                         disable_tqdm=True,
                     )
-                )
 
+                print(f"Semantic sampling with LDAE...[batch_idx: {batch_idx}]")
+                if self.test_noise_level < self.timesteps_args["timesteps"]:
+                    x_T_noise = self.gaussian_diffusion.q_sample(x0, self.test_noise_level)
+                    x0_semantic = (
+                        self.gaussian_diffusion.representation_learning_diffae_sample(
+                            ddim_style=self.test_ddim_style,
+                            encoder=self.ema_encoder,
+                            unet=self.ema_decoder,
+                            x_0=x0,
+                            x_T=x_T_noise,
+                            start_t=self.test_noise_level,
+                            disable_tqdm=True,
+                        )
+                    )
+                else: 
+                    x0_semantic = (
+                        self.gaussian_diffusion.representation_learning_diffae_sample(
+                            ddim_style=self.test_ddim_style,
+                            encoder=self.ema_encoder,
+                            unet=self.ema_decoder,
+                            x_0=x0,
+                            x_T=torch.randn_like(x0),
+                            disable_tqdm=True,
+                        )
+                    )
             elif self.vae is not None:
 
                 # Use the EMA version (or the main encoder/decoder) for sampling
@@ -727,14 +740,15 @@ class CondDDPM(L.LightningModule):
 
             # Store the result
             x0_real_np = x0_real.cpu().numpy()  # [B, C, H, W]
-            x0_hat_np = x0_hat.cpu().numpy()  # [B, C, H, W]
             x0_semantic_np = x0_semantic.cpu().numpy()
             self.ano_gts.append(anomaly_gt_seg.cpu().numpy())
-            self.recons_np.append(x0_hat_np)
             self.recons_semantic_np.append(x0_semantic_np)
             self.origins.append(x0_real_np)
+            if self.use_xT_inferred:
+                x0_hat_np = x0_hat.cpu().numpy()  # [B, C, H, W]
+                self.recons_np.append(x0_hat_np)
 
-            # Lof infos to eval_dict
+            # Log infos to eval_dict
             self.eval_dict["IDs"].append(pidx)
             self.eval_dict["labelPerVol"].append(anomaly)
             self.eval_dict["anomalyType"].append(anomaly_type)
@@ -798,18 +812,21 @@ class CondDDPM(L.LightningModule):
 
                 elif self.spartial_dim == 2:
                     job = self.trainer.state.stage.value
-                    self.tb_log_image_batch_2d(
-                        x_T_inferred, job=job, caption="xT_inferred", idx=save_idx
-                    )
-                    self.tb_log_image_batch_2d(
-                        x0_semantic, job=job, caption="recon_semantic", idx=save_idx
-                    )
-                    self.tb_log_image_batch_2d(
-                        x0_hat, job=job, caption="recon_inferred", idx=save_idx
-                    )
-                    self.tb_log_image_batch_2d(
-                        x0_real, job=job, caption="real", idx=save_idx
-                    )
+                    # self.tb_log_image_batch_2d(
+                    #     x0_semantic, job=job, caption="recon_semantic", idx=save_idx
+                    # )
+                    # self.tb_log_image_batch_2d(
+                    #     x0_real, job=job, caption="real", idx=save_idx
+                    # )
+                    
+                    if self.use_xT_inferred:
+                        self.tb_log_image_batch_2d(
+                            x_T_inferred, job=job, caption="xT_inferred", idx=save_idx
+                        )
+                        # self.tb_log_image_batch_2d(
+                        #     x0_hat, job=job, caption="recon_inferred", idx=save_idx
+                        # )
+
                     if self.vae:
                         self.tb_log_image_batch_2d(
                             x0_recon, job=job, caption="recon_vaekl", idx=save_idx
@@ -823,20 +840,20 @@ class CondDDPM(L.LightningModule):
                         x_recons=x0_hat,
                         x_recons_semantic=x0_semantic,
                     )
-
-                    self.tb_log_plot_heatmap(
-                        idx=save_idx,
-                        caption="pixel_score_infer",
-                        x_origin=x0_real,
-                        x_recons=x0_hat,
-                    )
-
                     self.tb_log_plot_heatmap(
                         idx=save_idx,
                         caption="pixel_score_semantic",
                         x_origin=x0_real,
                         x_recons=x0_semantic,
                     )
+
+                    if self.use_xT_inferred:
+                        self.tb_log_plot_heatmap(
+                            idx=save_idx,
+                            caption="pixel_score_infer",
+                            x_origin=x0_real,
+                            x_recons=x0_hat,
+                        )
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
 
@@ -871,26 +888,19 @@ class CondDDPM(L.LightningModule):
             """
             np.save(os.path.join(np_path, np_name), x)
 
-        self.recons_np = np.stack(self.recons_np)  # [N, B, C, H, W]
         self.recons_semantic_np = np.stack(self.recons_semantic_np)  # [N, B, C, H, W]
         self.origins = np.stack(self.origins)  # [N, B, C, H, W])
         self.ano_gts = np.stack(self.ano_gts)  # [N, B, C, H, W]
-
-        save_np(self.result_path, "recons", self.recons_np)
         save_np(self.result_path, "recons_semantic", self.recons_semantic_np)
+
+        if self.use_xT_inferred:
+            self.recons_np = np.stack(self.recons_np)  # [N, B, C, H, W]
+            save_np(self.result_path, "recons", self.recons_np)
+
         print("Save reconstruction numpy.")
 
         # Calculate test metrics and save eval_dict
         ## Result for x_recon from xT_infer
-        self.eval_dict = test_metrics(
-            self,
-            eval_dict=self.eval_dict,
-            x_orgs=self.origins,
-            x_recons=self.recons_np,
-            x_ano_gts=self.ano_gts,
-            recon_type="infer",
-            save_dict=False,
-        )
 
         self.eval_dict = test_metrics(
             self,
@@ -902,6 +912,18 @@ class CondDDPM(L.LightningModule):
             save_dict=True,
             save_path=self.result_dict_path,
         )
+
+        if self.use_xT_inferred:
+            self.eval_dict = test_metrics(
+                self,
+                eval_dict=self.eval_dict,
+                x_orgs=self.origins,
+                x_recons=self.recons_np,
+                x_ano_gts=self.ano_gts,
+                recon_type="infer",
+                save_dict=False,
+            )
+
 
     def tb_display_generation(self, step, images, tag="Generated"):
         """
@@ -972,20 +994,27 @@ class CondDDPM(L.LightningModule):
         """
         writer = self.logger.experiment
 
-        imgs = [
-            x_origin.detach().cpu().squeeze(),
-            x_recons.detach().cpu().squeeze(),
-            torch.abs(x_origin - x_recons).detach().cpu().squeeze(),
-            x_recons_semantic.detach().cpu().squeeze(),
-            torch.abs(x_origin - x_recons_semantic).detach().cpu().squeeze(),
-        ]
+        if self.use_xT_inferred:
+            imgs = [
+                x_origin.detach().cpu().squeeze(),
+                x_recons_semantic.detach().cpu().squeeze(),
+                torch.abs(x_origin - x_recons_semantic).detach().cpu().squeeze(),
+                x_recons.detach().cpu().squeeze(),
+                torch.abs(x_origin - x_recons).detach().cpu().squeeze(),
+            ]    
+        else: 
+            imgs = [
+                x_origin.detach().cpu().squeeze(),
+                x_recons_semantic.detach().cpu().squeeze(),
+                torch.abs(x_origin - x_recons_semantic).detach().cpu().squeeze(),
+            ]   
 
         labels = [
             "origin",
-            "recons_infer",
-            "error_infer",
             "recons_semantic",
             "error_semantic",
+            "recons_infer",
+            "error_infer",
         ]
 
         is_errors = [False, False, True, False, True]

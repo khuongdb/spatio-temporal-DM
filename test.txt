@@ -1,7 +1,0 @@
-{'betas_mean': tensor([[0., 0.],
-        [0., 0.],
-        [0., 0.]]), 'log_g_mean': tensor([ 1.0945, -0.6525,  0.4570, -0.3207]), 'log_v0_mean': tensor([-3.2741, -3.4923, -2.7901, -3.6199]), 'noise_std': tensor([0.1000]), 'tau_mean': tensor([76.6121]), 'tau_std': tensor([5.]), 'xi_std': tensor([0.5000])}
-
-{'betas_mean': tensor([[ 0.0000,  0.0000],
-        [-0.0049,  0.0033],
-        [ 0.0027,  0.0000]]), 'log_g_mean': tensor([ 1.1016, -0.6525,  0.4598, -0.3183]), 'log_v0_mean': tensor([-3.3185, -3.5368, -2.8345, -3.6644]), 'noise_std': tensor(0.3259), 'tau_mean': tensor([76.5733]), 'tau_std': tensor([4.7653]), 'xi_std': tensor([0.4921])}

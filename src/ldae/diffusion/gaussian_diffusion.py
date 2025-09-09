@@ -809,7 +809,16 @@ class GaussianDiffusion:
             img = self.noise_p_sample(img, t, predicted_noise + shift_coef * gradient)
         return img
 
-    def representation_learning_ddim_sample(self, ddim_style, encoder, decoder, x_0, x_T, z=None, stop_percent=0.0, disable_tqdm=False):
+    def representation_learning_ddim_sample(self, 
+                                            ddim_style, 
+                                            encoder, 
+                                            decoder, 
+                                            x_0, 
+                                            x_T, 
+                                            start_t=None,
+                                            z=None, 
+                                            stop_percent=0.0, 
+                                            disable_tqdm=False):
         """
         DDIM sampling guided by the semantic representation for representation learning.
         
@@ -830,7 +839,11 @@ class GaussianDiffusion:
         """
         if z is None:
             z = encoder(x_0)
-        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy())
+        if start_t is not None:
+            start_t = start_t
+        else:
+            start_t = self.timesteps
+        new_betas, timestep_map = self.get_ddim_betas_and_timestep_map(ddim_style, self.alphas_cumprod.cpu().numpy()[:start_t])
         ddim = DDIM(new_betas, timestep_map, self.device)
         return ddim.shift_ddim_sample_loop(decoder, z, x_T, stop_percent=stop_percent, disable_tqdm=disable_tqdm)
 

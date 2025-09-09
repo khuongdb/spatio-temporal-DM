@@ -32,7 +32,7 @@ fit:
             timesteps_args:
                 timesteps: 1000
                 betas_type: linear
-            lr: 2.5e-5
+            lr: 2.5e-4
             ema_decay: 0.999
             ema_update_after_step: 10
     data:
@@ -50,8 +50,8 @@ fit:
             save_data: False
             workdir: "workdir"
         batch_size: 
-            train: 2
-            val: 2
+            train: 10
+            val: 5
         num_workers: 5
         shuffle: 
             train: True
@@ -63,7 +63,7 @@ fit:
         logger:
             class_path: lightning.pytorch.loggers.TensorBoardLogger
             init_args:
-                save_dir: "workdir/diffae_starmen"
+                save_dir: "workdir/ldae_starmen"
                 name: ${fit.model.init_args.mode}
         precision: 16-mixed
         gradient_clip_val: 1.0
@@ -71,21 +71,22 @@ fit:
         # fast_dev_run: 1
         # limit_train_batches: 4
         # limit_val_batches: 1
-        num_sanity_val_steps: 0
-        # enable_progress_bar: true  # disable prog_bar in non-interactive mode on cluster. 
+        num_sanity_val_steps: 1
     early_stopping:
-        monitor: train_loss
+        monitor: val_loss
         patience: 100
         mode: min
         verbose: true
     model_checkpoint:
-        monitor: train_loss
+        monitor: val_loss
         mode: min
         auto_insert_metric_name: false
         save_top_k: 1
         filename: best
         save_last: true
         dirpath: ${fit.trainer.logger.init_args.save_dir}/${fit.trainer.logger.init_args.name}/checkpoints/
+    # ckpt_path: workdir/ldae_starmen/representation-learning/checkpoints/last.ckpt
+
 test: 
     seed_everything: 42
     model:
@@ -123,7 +124,12 @@ test:
             ema_decay: 0.999
             ema_update_after_step: 20
             log_img_every_epoch: 1
-            test_ddim_style: ddim1000
+            test_ddim_style: ddim100
+            test_noise_level: 250
+            heatmap_v: 1.
+            use_xT_inferred: False
+            fe_layers: ["layer1", "layer2", "layer3"]
+
     data:
         data_dir: ${fit.data.data_dir}
         test_ds: 
@@ -150,7 +156,6 @@ test:
         gradient_clip_val: 1.0
         num_sanity_val_steps: 0
         limit_val_batches: 10
-        # enable_progress_bar: false  # disable prog_bar in non-interactive mode on cluster. 
     early_stopping:
         monitor: test_ssim_ldae_original
     ckpt_path: ${fit.trainer.logger.init_args.save_dir}/representation-learning/checkpoints/best.ckpt
